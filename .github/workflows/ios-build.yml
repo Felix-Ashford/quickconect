@@ -52,5 +52,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: quickconect-ios-unsigned
-          path: app/build/ios/ipa-payload/quickconect-ios-unsigned.ipa
+          path: app/build/ios/quickconect-ios-unsigned.ipa
           retention-days: 30
+          if-no-files-found: error # 找不到 IPA 时直接报错，不再静默成功
