@@ -1,0 +1,24 @@
+# QuickConect 服务端配置样例
+# 部署位置: /etc/quickconect/config.yaml
+
+listen: ":8443"
+
+tls_enabled: true
+tls_cert: /etc/quickconect/server.crt
+tls_key: /etc/quickconect/server.key
+
+db_path: /var/lib/quickconect/quickconect.db
+media_path: /var/lib/quickconect/media
+
+# 单文件上限（MB）与每人总配额（GB）
+media_max_mb: 100
+user_quota_gb: 10
+
+# ntfy 推送铃（App 被杀后兜底通知）
+ntfy:
+  enabled: true
+  base_url: https://ntfy.sh
+  # 同一收件人 30 秒窗口内合并为一条 ping
+  coalesce_seconds: 30
+  # false: ping 只含「您有 N 条新消息」；true: 附带发送者昵称
+  include_sender: false

@@ -1,0 +1,38 @@
+name: quickconect_app
+description: QuickConect 私人即时通讯客户端（iOS / iPadOS / Android / Windows 四端共用）。
+publish_to: "none"
+version: 0.1.0
+
+environment:
+  sdk: ^3.13.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+  provider: ^6.1.2
+  http: ^1.2.2
+  web_socket_channel: ^3.0.3
+  crypto: ^3.0.6
+  shared_preferences: ^2.3.4
+  record: ^7.1.1
+  audioplayers: ^6.1.0
+  file_selector: ^1.0.3
+  image: ^4.2.0
+  archive: ^3.6.1
+  path_provider: ^2.1.5
+  flutter_local_notifications: ^19.0.0
+  qr_flutter: ^4.1.0
+  audio_session: ^0.2.0
+  flutter_foreground_task: ^8.0.0
+  permission_handler: ^11.3.1
+  app_badge_plus: ^1.2.3
+  window_manager: ^0.4.0
+  flutter_colorpicker: ^1.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

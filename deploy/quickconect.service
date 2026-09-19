@@ -1,0 +1,26 @@
+[Unit]
+Description=QuickConect private chat server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/quickconect/quickconect-server serve -config /etc/quickconect/config.yaml
+Restart=always
+RestartSec=3
+User=quickconect
+Group=quickconect
+
+# 数据目录权限
+StateDirectory=quickconect
+ConfigurationDirectory=quickconect
+ReadWritePaths=/var/lib/quickconect
+
+# 基础加固
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

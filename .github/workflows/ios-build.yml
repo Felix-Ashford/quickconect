@@ -1,0 +1,53 @@
+# QuickConect iOS 安装包构建（GitHub Actions）
+#
+# 用途：构建 iOS 用的【未签名】IPA，供 iPhone/iPad 上通过 SideStore 签名安装。
+#      （iOS 构建必须有 macOS，本机没有，因此用 GitHub 提供的免费云端机器。）
+#
+# 使用方法：
+#   1. 把整个项目推送到你的 GitHub 仓库（私有仓库即可，代码里没有密钥）
+#   2. GitHub 网页 → Actions → "Build iOS IPA" → Run workflow
+#   3. 构建完成后在该次运行页面下载 artifact（未签名 IPA）
+#   4. 传到手机，用 SideStore 导入签名安装
+#
+# 免费额度说明：私有仓库的 macOS 机器按 10 倍计费，每月约可构建 8~10 次；
+#   若不够用，可将仓库设为 Public（Actions 即不限量，代码无敏感信息）。
+
+name: Build iOS IPA
+
+on:
+  workflow_dispatch: {} # 支持在网页上手动触发
+  push:
+    tags: ["v*"] # 推送 v 开头的 tag 时自动构建
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.5
+          channel: stable
+          cache: true
+
+      - name: 拉取依赖
+        run: flutter pub get
+
+      - name: 构建（无签名）
+        run: flutter build ipa --release --no-codesign
+
+      - name: 打包未签名 IPA
+        run: |
+          mkdir -p build/ios/ipa-payload/Payload
+          cp -R build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app \
+                build/ios/ipa-payload/Payload/Runner.app
+          cd build/ios/ipa-payload
+          zip -qry ../quickconect-ios-unsigned.ipa Payload
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: quickconect-ios-unsigned
+          path: build/ios/ipa-payload/quickconect-ios-unsigned.ipa
+          retention-days: 30

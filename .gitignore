@@ -1,0 +1,30 @@
+# 本地构建产物与下载的工具链
+.tools/
+server/quickconect
+server/quickconect.exe
+dist/
+
+# 证书与密钥（绝不入库）
+*.crt
+*.key
+*.csr
+*.srl
+deploy/certs/
+
+# Flutter / Go 常见忽略项
+*.db
+*.db-wal
+*.db-shm
+.dart_tool/
+.packages
+build/
+
+# 安卓签名密钥（绝不入库）
+android/key.properties
+android/app/*.jks
+
+# 诊断临时文件
+convs.json
+msgs.json
+*.bin
+app/cmdtools.zip
