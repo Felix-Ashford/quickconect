@@ -52,55 +52,77 @@ class AppearancePage extends StatelessWidget {
           ),
           _Section('颜色明细（改动即时生效并保存）'),
           _ColorRow(
-            label: '主色调', desc: '按钮、链接、强调色',
+            label: '主色调',
+            desc: '按钮、链接、强调色',
             color: s.primary,
             onPicked: (c) => tc.apply(s.copyWith(primary: c, name: '自定义')),
           ),
           _ColorRow(
-            label: '顶栏', desc: '应用顶栏与桌面标题栏',
+            label: '顶栏',
+            desc: '应用顶栏与桌面标题栏',
             color: s.appBar,
             onPicked: (c) => tc.apply(s.copyWith(appBar: c, name: '自定义')),
           ),
           _ColorRow(
-            label: '界面背景', desc: '会话列表、设置等页面',
+            label: '界面背景',
+            desc: '会话列表、设置等页面',
             color: s.scaffoldBg,
             onPicked: (c) => tc.apply(s.copyWith(scaffoldBg: c, name: '自定义')),
           ),
           _ColorRow(
-            label: '聊天背景', desc: '聊天页空白区域',
+            label: '聊天背景',
+            desc: '聊天页空白区域',
             color: s.chatBg,
             onPicked: (c) => tc.apply(s.copyWith(chatBg: c, name: '自定义')),
           ),
           _ColorRow(
-            label: '我的气泡', desc: '自己发的消息底色',
+            label: '我的气泡',
+            desc: '自己发的消息底色',
             color: s.myBubble,
             onPicked: (c) => tc.apply(s.copyWith(myBubble: c, name: '自定义')),
           ),
           _ColorRow(
-            label: '我的气泡文字', desc: '',
+            label: '我的气泡文字',
+            desc: '',
             color: s.myBubbleText,
             onPicked: (c) => tc.apply(s.copyWith(myBubbleText: c, name: '自定义')),
           ),
           _ColorRow(
-            label: '对方气泡', desc: '对方消息底色',
+            label: '对方气泡',
+            desc: '对方消息底色',
             color: s.otherBubble,
             onPicked: (c) => tc.apply(s.copyWith(otherBubble: c, name: '自定义')),
           ),
           _ColorRow(
-            label: '对方气泡文字', desc: '',
+            label: '对方气泡文字',
+            desc: '',
             color: s.otherBubbleText,
-            onPicked: (c) => tc.apply(s.copyWith(otherBubbleText: c, name: '自定义')),
+            onPicked: (c) =>
+                tc.apply(s.copyWith(otherBubbleText: c, name: '自定义')),
           ),
           _ColorRow(
-            label: '未读角标', desc: '会话列表红点与桌面图标角标',
+            label: 'AI 气泡',
+            desc: '自动化身份消息底色',
+            color: s.aiBubble,
+            onPicked: (c) => tc.apply(s.copyWith(aiBubble: c, name: '自定义')),
+          ),
+          _ColorRow(
+            label: 'AI 气泡文字',
+            desc: '',
+            color: s.aiBubbleText,
+            onPicked: (c) => tc.apply(s.copyWith(aiBubbleText: c, name: '自定义')),
+          ),
+          _ColorRow(
+            label: '未读角标',
+            desc: '会话列表红点与桌面图标角标',
             color: s.unreadBadge,
             onPicked: (c) => tc.apply(s.copyWith(unreadBadge: c, name: '自定义')),
           ),
           const SizedBox(height: 16),
           Center(
             child: OutlinedButton.icon(
-              onPressed: () => tc.apply(
-                  QcScheme.builtIns.first.copyWith(name: '青绿')),
+              onPressed: () =>
+                  tc.apply(QcScheme.builtIns.first.copyWith(name: '青绿')),
               icon: const Icon(Icons.restart_alt),
               label: const Text('还原默认配色'),
             ),
@@ -119,6 +141,8 @@ class AppearancePage extends StatelessWidget {
       a.myBubbleText.toARGB32() == b.myBubbleText.toARGB32() &&
       a.otherBubble.toARGB32() == b.otherBubble.toARGB32() &&
       a.otherBubbleText.toARGB32() == b.otherBubbleText.toARGB32() &&
+      a.aiBubble.toARGB32() == b.aiBubble.toARGB32() &&
+      a.aiBubbleText.toARGB32() == b.aiBubbleText.toARGB32() &&
       a.unreadBadge.toARGB32() == b.unreadBadge.toARGB32();
 }
 
@@ -180,8 +204,14 @@ Future<void> _pickColor(
         ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('确定')),
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(ctx, true),
+          child: const Text('确定'),
+        ),
       ],
     ),
   );
@@ -215,11 +245,14 @@ class _ColorRow extends StatelessWidget {
       ),
       title: Text(label),
       subtitle: desc.isEmpty
-          ? Text('#${color.toARGB32().toRadixString(16).substring(2).toUpperCase()}',
-              style: const TextStyle(fontSize: 11))
+          ? Text(
+              '#${color.toARGB32().toRadixString(16).substring(2).toUpperCase()}',
+              style: const TextStyle(fontSize: 11),
+            )
           : Text(desc, style: const TextStyle(fontSize: 11)),
       trailing: const Icon(Icons.colorize),
-      onTap: () => _pickColor(context, label: label, initial: color, onPicked: onPicked),
+      onTap: () =>
+          _pickColor(context, label: label, initial: color, onPicked: onPicked),
     );
   }
 }
@@ -265,9 +298,13 @@ class _PreviewPane extends StatelessWidget {
             color: s.appBar,
             padding: const EdgeInsets.symmetric(horizontal: 10),
             alignment: Alignment.centerLeft,
-            child: Text('预览 · 顶栏',
-                style: TextStyle(
-                    fontSize: 12, color: QcScheme.contrastOn(s.appBar))),
+            child: Text(
+              '预览 · 顶栏',
+              style: TextStyle(
+                fontSize: 12,
+                color: QcScheme.contrastOn(s.appBar),
+              ),
+            ),
           ),
           Expanded(
             child: Padding(
@@ -277,6 +314,25 @@ class _PreviewPane extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   bubble(mine: false, text: '你好！这是对方的气泡样式'),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Container(
+                      margin: const EdgeInsets.symmetric(vertical: 3),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      constraints: const BoxConstraints(maxWidth: 220),
+                      decoration: BoxDecoration(
+                        color: s.aiBubble,
+                        borderRadius: BorderRadius.circular(radius),
+                      ),
+                      child: Text(
+                        '这是 AI 身份的独立气泡样式',
+                        style: TextStyle(fontSize: 13, color: s.aiBubbleText),
+                      ),
+                    ),
+                  ),
                   bubble(mine: true, text: '这是我的气泡样式 👋'),
                   Align(
                     alignment: Alignment.centerRight,
@@ -293,10 +349,13 @@ class _PreviewPane extends StatelessWidget {
                   ),
                   Align(
                     alignment: Alignment.centerRight,
-                    child: Text('02:35',
-                        style: TextStyle(
-                            fontSize: 10,
-                            color: s.otherBubbleText.withValues(alpha: 0.55))),
+                    child: Text(
+                      '02:35',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: s.otherBubbleText.withValues(alpha: 0.55),
+                      ),
+                    ),
                   ),
                 ],
               ),

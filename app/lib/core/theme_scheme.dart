@@ -22,6 +22,8 @@ class QcScheme {
   final Color myBubbleText;
   final Color otherBubble; // 对方气泡
   final Color otherBubbleText;
+  final Color aiBubble;
+  final Color aiBubbleText;
   final Color unreadBadge; // 未读角标
 
   const QcScheme({
@@ -34,8 +36,11 @@ class QcScheme {
     required this.myBubbleText,
     required this.otherBubble,
     required this.otherBubbleText,
+    Color? aiBubble,
+    Color? aiBubbleText,
     required this.unreadBadge,
-  });
+  }) : aiBubble = aiBubble ?? otherBubble,
+       aiBubbleText = aiBubbleText ?? otherBubbleText;
 
   QcScheme copyWith({
     String? name,
@@ -47,53 +52,63 @@ class QcScheme {
     Color? myBubbleText,
     Color? otherBubble,
     Color? otherBubbleText,
+    Color? aiBubble,
+    Color? aiBubbleText,
     Color? unreadBadge,
-  }) =>
-      QcScheme(
-        name: name ?? this.name,
-        primary: primary ?? this.primary,
-        appBar: appBar ?? this.appBar,
-        scaffoldBg: scaffoldBg ?? this.scaffoldBg,
-        chatBg: chatBg ?? this.chatBg,
-        myBubble: myBubble ?? this.myBubble,
-        myBubbleText: myBubbleText ?? this.myBubbleText,
-        otherBubble: otherBubble ?? this.otherBubble,
-        otherBubbleText: otherBubbleText ?? this.otherBubbleText,
-        unreadBadge: unreadBadge ?? this.unreadBadge,
-      );
+  }) => QcScheme(
+    name: name ?? this.name,
+    primary: primary ?? this.primary,
+    appBar: appBar ?? this.appBar,
+    scaffoldBg: scaffoldBg ?? this.scaffoldBg,
+    chatBg: chatBg ?? this.chatBg,
+    myBubble: myBubble ?? this.myBubble,
+    myBubbleText: myBubbleText ?? this.myBubbleText,
+    otherBubble: otherBubble ?? this.otherBubble,
+    otherBubbleText: otherBubbleText ?? this.otherBubbleText,
+    aiBubble: aiBubble ?? this.aiBubble,
+    aiBubbleText: aiBubbleText ?? this.aiBubbleText,
+    unreadBadge: unreadBadge ?? this.unreadBadge,
+  );
 
   Map<String, dynamic> toJson() => {
-        'name': name,
-        'primary': primary.toARGB32(),
-        'appBar': appBar.toARGB32(),
-        'scaffoldBg': scaffoldBg.toARGB32(),
-        'chatBg': chatBg.toARGB32(),
-        'myBubble': myBubble.toARGB32(),
-        'myBubbleText': myBubbleText.toARGB32(),
-        'otherBubble': otherBubble.toARGB32(),
-        'otherBubbleText': otherBubbleText.toARGB32(),
-        'unreadBadge': unreadBadge.toARGB32(),
-      };
+    'name': name,
+    'primary': primary.toARGB32(),
+    'appBar': appBar.toARGB32(),
+    'scaffoldBg': scaffoldBg.toARGB32(),
+    'chatBg': chatBg.toARGB32(),
+    'myBubble': myBubble.toARGB32(),
+    'myBubbleText': myBubbleText.toARGB32(),
+    'otherBubble': otherBubble.toARGB32(),
+    'otherBubbleText': otherBubbleText.toARGB32(),
+    'aiBubble': aiBubble.toARGB32(),
+    'aiBubbleText': aiBubbleText.toARGB32(),
+    'unreadBadge': unreadBadge.toARGB32(),
+  };
 
   factory QcScheme.fromJson(Map<String, dynamic> j) => QcScheme(
-        name: j['name'] as String? ?? '自定义',
-        primary: Color(j['primary'] as int),
-        appBar: Color(j['appBar'] as int),
-        scaffoldBg: Color(j['scaffoldBg'] as int),
-        chatBg: Color(j['chatBg'] as int),
-        myBubble: Color(j['myBubble'] as int),
-        myBubbleText: Color(j['myBubbleText'] as int),
-        otherBubble: Color(j['otherBubble'] as int),
-        otherBubbleText: Color(j['otherBubbleText'] as int),
-        unreadBadge: Color(j['unreadBadge'] as int),
-      );
+    name: j['name'] as String? ?? '自定义',
+    primary: Color(j['primary'] as int),
+    appBar: Color(j['appBar'] as int),
+    scaffoldBg: Color(j['scaffoldBg'] as int),
+    chatBg: Color(j['chatBg'] as int),
+    myBubble: Color(j['myBubble'] as int),
+    myBubbleText: Color(j['myBubbleText'] as int),
+    otherBubble: Color(j['otherBubble'] as int),
+    otherBubbleText: Color(j['otherBubbleText'] as int),
+    aiBubble: j['aiBubble'] is int ? Color(j['aiBubble'] as int) : null,
+    aiBubbleText: j['aiBubbleText'] is int
+        ? Color(j['aiBubbleText'] as int)
+        : null,
+    unreadBadge: Color(j['unreadBadge'] as int),
+  );
 
   /// 深浅自动判断（供派生文字/图标色参考）。
   bool get isLight => scaffoldBg.computeLuminance() > 0.5;
 
   /// 在某背景色上的自动对比色。
-  static Color contrastOn(Color bg) =>
-      bg.computeLuminance() > 0.5 ? const Color(0xFF1C1C1C) : const Color(0xFFF5F5F5);
+  static Color contrastOn(Color bg) => bg.computeLuminance() > 0.5
+      ? const Color(0xFF1C1C1C)
+      : const Color(0xFFF5F5F5);
 
   // ---------- 内置预设 ----------
 
@@ -173,6 +188,8 @@ class QcColors extends ThemeExtension<QcColors> {
   final Color myBubbleText;
   final Color otherBubble;
   final Color otherBubbleText;
+  final Color aiBubble;
+  final Color aiBubbleText;
   final Color chatBg;
   final Color unreadBadge;
 
@@ -181,18 +198,22 @@ class QcColors extends ThemeExtension<QcColors> {
     required this.myBubbleText,
     required this.otherBubble,
     required this.otherBubbleText,
+    required this.aiBubble,
+    required this.aiBubbleText,
     required this.chatBg,
     required this.unreadBadge,
   });
 
   factory QcColors.ofScheme(QcScheme s) => QcColors(
-        myBubble: s.myBubble,
-        myBubbleText: s.myBubbleText,
-        otherBubble: s.otherBubble,
-        otherBubbleText: s.otherBubbleText,
-        chatBg: s.chatBg,
-        unreadBadge: s.unreadBadge,
-      );
+    myBubble: s.myBubble,
+    myBubbleText: s.myBubbleText,
+    otherBubble: s.otherBubble,
+    otherBubbleText: s.otherBubbleText,
+    aiBubble: s.aiBubble,
+    aiBubbleText: s.aiBubbleText,
+    chatBg: s.chatBg,
+    unreadBadge: s.unreadBadge,
+  );
 
   @override
   QcColors lerp(QcColors? other, double t) {
@@ -203,6 +224,8 @@ class QcColors extends ThemeExtension<QcColors> {
       myBubbleText: c(myBubbleText, other.myBubbleText),
       otherBubble: c(otherBubble, other.otherBubble),
       otherBubbleText: c(otherBubbleText, other.otherBubbleText),
+      aiBubble: c(aiBubble, other.aiBubble),
+      aiBubbleText: c(aiBubbleText, other.aiBubbleText),
       chatBg: c(chatBg, other.chatBg),
       unreadBadge: c(unreadBadge, other.unreadBadge),
     );
@@ -214,23 +237,29 @@ class QcColors extends ThemeExtension<QcColors> {
     Color? myBubbleText,
     Color? otherBubble,
     Color? otherBubbleText,
+    Color? aiBubble,
+    Color? aiBubbleText,
     Color? chatBg,
     Color? unreadBadge,
-  }) =>
-      QcColors(
-        myBubble: myBubble ?? this.myBubble,
-        myBubbleText: myBubbleText ?? this.myBubbleText,
-        otherBubble: otherBubble ?? this.otherBubble,
-        otherBubbleText: otherBubbleText ?? this.otherBubbleText,
-        chatBg: chatBg ?? this.chatBg,
-        unreadBadge: unreadBadge ?? this.unreadBadge,
-      );
+  }) => QcColors(
+    myBubble: myBubble ?? this.myBubble,
+    myBubbleText: myBubbleText ?? this.myBubbleText,
+    otherBubble: otherBubble ?? this.otherBubble,
+    otherBubbleText: otherBubbleText ?? this.otherBubbleText,
+    aiBubble: aiBubble ?? this.aiBubble,
+    aiBubbleText: aiBubbleText ?? this.aiBubbleText,
+    chatBg: chatBg ?? this.chatBg,
+    unreadBadge: unreadBadge ?? this.unreadBadge,
+  );
 }
 
 /// 由配色方案构建完整 ThemeData。
 ThemeData buildQcTheme(QcScheme s) {
   final brightness = s.isLight ? Brightness.light : Brightness.dark;
-  final seeded = ColorScheme.fromSeed(seedColor: s.primary, brightness: brightness);
+  final seeded = ColorScheme.fromSeed(
+    seedColor: s.primary,
+    brightness: brightness,
+  );
   final colorScheme = seeded.copyWith(
     primary: s.primary,
     surface: s.scaffoldBg,
@@ -247,11 +276,11 @@ ThemeData buildQcTheme(QcScheme s) {
       scrolledUnderElevation: 0,
     ),
     dividerTheme: DividerThemeData(
-      color: s.isLight ? Colors.black.withValues(alpha: 0.08) : Colors.white.withValues(alpha: 0.08),
+      color: s.isLight
+          ? Colors.black.withValues(alpha: 0.08)
+          : Colors.white.withValues(alpha: 0.08),
     ),
-    extensions: <ThemeExtension<dynamic>>[
-      QcColors.ofScheme(s),
-    ],
+    extensions: <ThemeExtension<dynamic>>[QcColors.ofScheme(s)],
   );
 }
 
@@ -270,8 +299,8 @@ class ThemeController extends ChangeNotifier {
   List<QcScheme> userPresets;
 
   ThemeController(this.prefs)
-      : scheme = QcScheme.builtIns.first,
-        userPresets = const [];
+    : scheme = QcScheme.builtIns.first,
+      userPresets = const [];
 
   Future<void> load() async {
     final cur = prefs.getString(_curKey);
@@ -311,14 +340,19 @@ class ThemeController extends ChangeNotifier {
   }
 
   Future<void> deletePreset(String name) async {
-    userPresets = [for (final p in userPresets) if (p.name != name) p];
+    userPresets = [
+      for (final p in userPresets)
+        if (p.name != name) p,
+    ];
     await _savePresets();
     notifyListeners();
   }
 
   Future<void> _savePresets() async {
     await prefs.setString(
-        _presetsKey, jsonEncodeList(userPresets.map((p) => p.toJson()).toList()));
+      _presetsKey,
+      jsonEncodeList(userPresets.map((p) => p.toJson()).toList()),
+    );
   }
 }
 

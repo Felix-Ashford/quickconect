@@ -15,6 +15,7 @@ import 'core/notifications.dart';
 import 'core/prefs.dart';
 import 'core/session.dart';
 import 'core/theme_scheme.dart';
+import 'core/voice_player.dart';
 import 'pages/chat_page.dart';
 import 'pages/home_page.dart';
 import 'pages/login_page.dart';
@@ -24,6 +25,8 @@ final _navKey = GlobalKey<NavigatorState>();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 提前订阅语音播放完成与进度事件。
+  await VoicePlayer.instance.init();
   final prefs = SharedPrefs(await SharedPreferences.getInstance());
   PinningStore.loadFromPrefs(prefs);
   HttpOverrides.global = PinningOverrides();

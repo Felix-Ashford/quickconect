@@ -14,6 +14,7 @@ HOST="${1:-${QC_HOST:-}}"
 SSH_USER="${2:-${QC_USER:-ubuntu}}"
 KEY="${3:-${QC_KEY:-}}"
 PORT="${4:-${QC_PORT:-22}}"
+DOMAIN="${QC_DOMAIN:-}"
 [[ -n "$HOST" && -n "$KEY" ]] || { echo "用法: $0 <host> <ssh用户> <私钥路径> [端口]"; exit 2; }
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -25,18 +26,27 @@ GO_BIN="$(command -v go || true)"
 [[ -n "$GO_BIN" ]] || { echo "错误: 找不到 go，请先安装或确认 .tools/go 存在"; exit 1; }
 mkdir -p "$REPO/dist"
 (cd "$REPO/server" && GOOS=linux GOARCH=amd64 "$GO_BIN" build -o "$REPO/dist/quickconect-server-linux-amd64" .)
+(cd "$REPO/server" && GOOS=linux GOARCH=arm64 "$GO_BIN" build -o "$REPO/dist/quickconect-server-linux-arm64" .)
 
 # ---- 2. 上传 ----
 echo "==> 上传到 $SSH_USER@$HOST"
 SSH_OPTS=(-i "$KEY" -p "$PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20)
+REMOTE_ARCH="$(ssh "${SSH_OPTS[@]}" "$SSH_USER@$HOST" "uname -m")"
+case "$REMOTE_ARCH" in
+  x86_64|amd64) BIN_NAME="quickconect-server-linux-amd64" ;;
+  aarch64|arm64) BIN_NAME="quickconect-server-linux-arm64" ;;
+  *) echo "不支持的 VPS 架构: $REMOTE_ARCH"; exit 1 ;;
+esac
 ssh "${SSH_OPTS[@]}" "$SSH_USER@$HOST" "mkdir -p /tmp/quickconect-deploy"
-scp "${SSH_OPTS[@]/-p/-P}" "$REPO/dist/quickconect-server-linux-amd64" \
-    "$REPO/deploy/install.sh" "$SSH_USER@$HOST:/tmp/quickconect-deploy/"
+scp "${SSH_OPTS[@]/-p/-P}" "$REPO/dist/$BIN_NAME" \
+    "$REPO/deploy/install.sh" "$REPO/deploy/firewall.sh" "$SSH_USER@$HOST:/tmp/quickconect-deploy/"
 
 # ---- 3. 执行安装 ----
 echo "==> 执行安装（幂等，可重复跑）"
+REMOTE_ARGS="--server-ip $HOST --ssh-port $PORT"
+[[ -n "$DOMAIN" ]] && REMOTE_ARGS="$REMOTE_ARGS --server-domain $DOMAIN"
 ssh "${SSH_OPTS[@]}" "$SSH_USER@$HOST" \
-  "sudo bash /tmp/quickconect-deploy/install.sh --server-ip $HOST"
+  "sudo bash /tmp/quickconect-deploy/install.sh $REMOTE_ARGS"
 ssh "${SSH_OPTS[@]}" "$SSH_USER@$HOST" "rm -rf /tmp/quickconect-deploy"
 
 echo "==> 完成。验证: curl -k https://$HOST:8443/healthz"

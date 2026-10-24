@@ -11,6 +11,7 @@ class VoicePlayer {
   static final VoicePlayer instance = VoicePlayer._();
 
   final AudioPlayer _player = AudioPlayer();
+  bool _initialized = false;
 
   /// 正在播放的媒体 ID（null=空闲）。
   final ValueNotifier<String?> playing = ValueNotifier(null);
@@ -21,6 +22,8 @@ class VoicePlayer {
   String? _currentMediaId;
 
   Future<void> init() async {
+    if (_initialized) return;
+    _initialized = true;
     _player.onPlayerComplete.listen((_) {
       playing.value = null;
       positionMs.value = 0;
@@ -32,6 +35,7 @@ class VoicePlayer {
 
   /// 播放指定媒体；再次调用同一 ID 即停止，不同 ID 即切换。
   Future<void> toggle(String mediaId, String filePath) async {
+    await init();
     if (_currentMediaId == mediaId && playing.value != null) {
       await stop();
       return;
@@ -39,7 +43,13 @@ class VoicePlayer {
     await stop();
     _currentMediaId = mediaId;
     try {
-      await _player.play(DeviceFileSource(filePath));
+      await _player.play(
+        DeviceFileSource(filePath),
+        mode: PlayerMode.mediaPlayer,
+        ctx: AudioContext(
+          iOS: AudioContextIOS(category: AVAudioSessionCategory.playback),
+        ),
+      );
       playing.value = mediaId;
     } catch (_) {
       playing.value = null;

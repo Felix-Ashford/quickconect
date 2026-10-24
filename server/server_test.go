@@ -9,7 +9,9 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,7 +26,7 @@ import (
 )
 
 // startTestServer 起一个内存配置的完整服务（无 TLS、随机端口），返回基地址与存储句柄。
-func startTestServer(t *testing.T) (string, *store.Store) {
+func startTestServer(t *testing.T, identities ...config.AutomationIdentity) (string, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := config.Default()
@@ -33,10 +35,22 @@ func startTestServer(t *testing.T) (string, *store.Store) {
 	cfg.MediaPath = filepath.Join(dir, "media")
 	cfg.MediaMaxMB = 1
 	cfg.Ntfy.Enabled = false
+	cfg.Automation.Identities = identities
 
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
 		t.Fatalf("打开测试数据库: %v", err)
+	}
+	for _, identity := range identities {
+		if identity.Enabled {
+			display := identity.DisplayName
+			if display == "" {
+				display = identity.Name
+			}
+			if _, err := st.EnsureAutomationUser(identity.Name, display); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	hub := ws.NewHub(log)
@@ -55,6 +69,54 @@ func startTestServer(t *testing.T) (string, *store.Store) {
 }
 
 var httpClient = &http.Client{Timeout: 5 * time.Second}
+
+func TestDeletedPeerCannotChat(t *testing.T) {
+	base, st := startTestServer(t)
+	users := make(map[string]int64)
+	for _, name := range []string{"alice", "bob", "carol"} {
+		hash, _ := auth.HashPassword("pw-" + name)
+		u, err := st.CreateUser(name, name, hash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		users[name] = u.ID
+	}
+	token := login(t, base, "alice")
+	conv, err := st.GetOrCreateDM(users["alice"], users["bob"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.InsertMessage(conv, users["alice"], "text", []byte(`{"text":"history"}`), "before-delete")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeleteUser(users["bob"]); err != nil {
+		t.Fatal(err)
+	}
+	var directory []store.User
+	decode(t, call(t, "GET", base+"/api/users", token, nil), &directory)
+	if len(directory) != 2 {
+		t.Fatalf("deleted user still in directory: %+v", directory)
+	}
+	var conversations []store.ConvSummary
+	decode(t, call(t, "GET", base+"/api/conversations", token, nil), &conversations)
+	if len(conversations) != 0 {
+		t.Fatal("deleted peer conversation still selectable")
+	}
+	if r := call(t, "POST", base+"/api/conversations", token, map[string]any{"peer_id": users["bob"]}); r.status != 400 {
+		t.Fatalf("opening deleted user: %d %s", r.status, r.body)
+	}
+	if r := call(t, "POST", fmt.Sprintf("%s/api/conversations/%d/messages", base, conv), token, map[string]any{"client_msg_id": "after-delete", "type": "text", "payload": map[string]any{"text": "blocked"}}); r.status != 403 {
+		t.Fatalf("sending to deleted user: %d %s", r.status, r.body)
+	}
+	history, _, err := st.MessagesAfter(conv, 0, 100)
+	if err != nil || len(history) != 1 {
+		t.Fatalf("history not preserved: %v %v", history, err)
+	}
+	if r := call(t, "POST", base+"/api/conversations", token, map[string]any{"peer_id": users["carol"]}); r.status != 200 {
+		t.Fatalf("active user conversation failed: %d %s", r.status, r.body)
+	}
+}
 
 type apiResp struct {
 	status int
@@ -164,6 +226,13 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("device 信息异常: %+v", dev)
 	}
 
+	// /api/push/test：测试推送复用真实链路。
+	// 测试环境 ntfy 未启用时应明确报错（而不是静默成功），
+	// 保证「测试按钮说通、实际推不到」这种假象不会出现。
+	if got := call(t, "POST", base+"/api/push/test", tokenA, nil).status; got != http.StatusBadGateway {
+		t.Fatalf("未启用推送铃时 push/test 应返回 502，得到 %d", got)
+	}
+
 	// 用户名册
 	var users []store.User
 	decode(t, call(t, "GET", base+"/api/users", tokenA, nil), &users)
@@ -230,8 +299,8 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("读取 WS 事件: %v", err)
 	}
 	var event struct {
-		Type    string         `json:"type"`
-		Message store.Message  `json:"message"`
+		Type    string        `json:"type"`
+		Message store.Message `json:"message"`
 	}
 	if err := json.Unmarshal(frame, &event); err != nil {
 		t.Fatalf("WS 帧解析: %v", err)
@@ -295,6 +364,367 @@ func TestEndToEnd(t *testing.T) {
 	if r := call(t, "GET", base+"/api/me", tokenA, nil); r.status != 401 {
 		t.Fatalf("注销后应 401，得到 %d", r.status)
 	}
+}
+
+func TestAutomationConfigAndWebhook(t *testing.T) {
+	base, st := startTestServer(t, config.AutomationIdentity{ID: "brief", Name: "brief", DisplayName: "Brief", Mode: "push", Enabled: true, WebhookToken: "test-secret"})
+	ha, _ := auth.HashPassword("pw-alice")
+	alice, err := st.CreateUser("alice", "Alice", ha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hb, _ := auth.HashPassword("pw-bob")
+	bob, err := st.CreateUser("bob", "Bob", hb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := login(t, base, "alice")
+	var conv struct {
+		ID int64 `json:"id"`
+	}
+	decode(t, call(t, "POST", base+"/api/conversations", token, map[string]int64{"peer_id": bob.ID}), &conv)
+	bad := call(t, "POST", base+"/api/automation/brief/webhook", "wrong", map[string]any{"client_msg_id": "bad", "user_id": alice.ID, "type": "text", "payload": map[string]string{"text": "no"}})
+	if bad.status != http.StatusUnauthorized {
+		t.Fatalf("bad token status=%d", bad.status)
+	}
+	good := call(t, "POST", base+"/api/automation/brief/webhook", "test-secret", map[string]any{"client_msg_id": "good", "user_id": alice.ID, "type": "text", "payload": map[string]string{"text": "hello"}})
+	if good.status != http.StatusOK {
+		t.Fatalf("webhook status=%d body=%s", good.status, good.body)
+	}
+	var pushed store.Message
+	decode(t, good, &pushed)
+	if pushed.SenderName != "Brief" || pushed.Seq != 1 {
+		t.Fatalf("unexpected pushed message: %+v", pushed)
+	}
+	dup := call(t, "POST", base+"/api/automation/brief/webhook", "test-secret", map[string]any{"client_msg_id": "good", "user_id": alice.ID, "type": "text", "payload": map[string]string{"text": "hello"}})
+	if dup.status != http.StatusOK {
+		t.Fatalf("duplicate status=%d", dup.status)
+	}
+}
+
+func TestPushTargetsAndAutomationThreads(t *testing.T) {
+	base, st := startTestServer(t, config.AutomationIdentity{ID: "brief", Name: "brief", DisplayName: "Brief", Mode: "push", Enabled: true, WebhookToken: "secret", PushTargets: "user, conversation"}, config.AutomationIdentity{ID: "helper", Name: "helper", DisplayName: "Helper", Mode: "api", Enabled: true, Endpoint: "https://example.invalid", AllowedUsers: []int64{3}, PrivateDirectory: true})
+	ha, _ := auth.HashPassword("pw-alice")
+	alice, _ := st.CreateUser("alice", "Alice", ha)
+	hb, _ := auth.HashPassword("pw-bob")
+	bob, _ := st.CreateUser("bob", "Bob", hb)
+	token := login(t, base, "alice")
+	for i := 0; i < 2; i++ {
+		r := call(t, "POST", base+"/api/automation/helper/threads", token, map[string]string{"title": fmt.Sprintf("Thread %d", i+1)})
+		if r.status != http.StatusCreated {
+			t.Fatalf("thread create status=%d body=%s", r.status, r.body)
+		}
+	}
+	listed := call(t, "GET", base+"/api/automation/helper/threads", token, nil)
+	var threads []store.AutomationThread
+	decode(t, listed, &threads)
+	if listed.status != http.StatusOK || len(threads) != 2 || threads[0].ConversationID == threads[1].ConversationID {
+		t.Fatalf("thread isolation failed status=%d threads=%+v", listed.status, threads)
+	}
+	bobToken := login(t, base, "bob")
+	if r := call(t, "GET", base+"/api/automation/helper/threads", bobToken, nil); r.status != http.StatusForbidden {
+		t.Fatalf("disallowed thread list status=%d", r.status)
+	}
+	// Both configured target forms are accepted by a comma-separated policy.
+	userPush := call(t, "POST", base+"/api/automation/brief/webhook", "secret", map[string]any{"client_msg_id": "to-user", "user_id": alice.ID, "type": "text", "payload": map[string]string{"text": "hello"}})
+	if userPush.status != http.StatusOK {
+		t.Fatalf("user target rejected: %d %s", userPush.status, userPush.body)
+	}
+	_ = bob
+}
+
+func TestAutomationAPIFallback(t *testing.T) {
+	var calls int
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			http.Error(w, "temporary", http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": "fallback answer"}}}})
+	}))
+	defer modelServer.Close()
+	base, st := startTestServer(t, config.AutomationIdentity{ID: "helper", Name: "helper", DisplayName: "Helper", Mode: "api", Enabled: true, Endpoint: modelServer.URL, DefaultModel: "first", ModelFallbacks: []string{"second"}})
+	ha, _ := auth.HashPassword("pw-alice")
+	alice, _ := st.CreateUser("alice", "Alice", ha)
+	token := login(t, base, "alice")
+	var conv struct {
+		ID int64 `json:"id"`
+	}
+	_ = call(t, "POST", base+"/api/conversations", token, map[string]int64{"peer_id": alice.ID})
+	// API mode requires a second member; use a separate user and open a DM.
+	hb, _ := auth.HashPassword("pw-bob")
+	bob, _ := st.CreateUser("bob", "Bob", hb)
+	decode(t, call(t, "POST", base+"/api/conversations", token, map[string]int64{"peer_id": bob.ID}), &conv)
+	r := call(t, "POST", base+"/api/automation/helper/invoke", token, map[string]any{"conversation_id": conv.ID, "prompt": "hello", "client_msg_id": "ai-1"})
+	if r.status != http.StatusOK || calls != 2 {
+		t.Fatalf("invoke status=%d calls=%d body=%s", r.status, calls, r.body)
+	}
+	var msg store.Message
+	decode(t, r, &msg)
+	if msg.SenderName != "Helper" {
+		t.Fatalf("sender=%s", msg.SenderName)
+	}
+}
+
+func TestAutomationMentionTrigger(t *testing.T) {
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": "mention answer"}}}})
+	}))
+	defer modelServer.Close()
+	base, st := startTestServer(t, config.AutomationIdentity{ID: "helper", Name: "helper", DisplayName: "Helper", Mode: "api", Enabled: true, Endpoint: modelServer.URL, DefaultModel: "test", MentionEnabled: true})
+	ha, _ := auth.HashPassword("pw-alice")
+	alice, _ := st.CreateUser("alice", "Alice", ha)
+	hb, _ := auth.HashPassword("pw-bob")
+	bob, _ := st.CreateUser("bob", "Bob", hb)
+	token := login(t, base, "alice")
+	var conv struct {
+		ID int64 `json:"id"`
+	}
+	decode(t, call(t, "POST", base+"/api/conversations", token, map[string]int64{"peer_id": bob.ID}), &conv)
+	r := call(t, "POST", fmt.Sprintf("%s/api/conversations/%d/messages", base, conv.ID), token, map[string]any{"client_msg_id": "mention-1", "type": "text", "payload": map[string]string{"text": "@helper please answer"}})
+	if r.status != http.StatusOK {
+		t.Fatalf("send mention status=%d body=%s", r.status, r.body)
+	}
+	var found bool
+	for i := 0; i < 20; i++ {
+		time.Sleep(25 * time.Millisecond)
+		msgs, _, _ := st.MessagesAfter(conv.ID, 0, 20)
+		for _, msg := range msgs {
+			if msg.SenderName == "Helper" {
+				found = true
+			}
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		t.Fatal("mention did not produce an automation reply")
+	}
+	if ok, _ := st.IsMember(conv.ID, alice.ID); !ok {
+		t.Fatal("sender is no longer a member")
+	}
+}
+
+func TestAutomationMentionDiscoversModels(t *testing.T) {
+	calledModel := make(chan string, 1)
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]string{"id": "discovered-model"}}})
+			return
+		}
+		var request struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		calledModel <- request.Model
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": "discovered answer"}}}})
+	}))
+	defer modelServer.Close()
+	base, st := startTestServer(t, config.AutomationIdentity{ID: "helper", Name: "helper", DisplayName: "Helper", Mode: "api", Enabled: true, Endpoint: modelServer.URL, MentionEnabled: true})
+	ha, _ := auth.HashPassword("pw-alice")
+	_, _ = st.CreateUser("alice", "Alice", ha)
+	hb, _ := auth.HashPassword("pw-bob")
+	bob, _ := st.CreateUser("bob", "Bob", hb)
+	token := login(t, base, "alice")
+	var conv struct {
+		ID int64 `json:"id"`
+	}
+	decode(t, call(t, "POST", base+"/api/conversations", token, map[string]int64{"peer_id": bob.ID}), &conv)
+	r := call(t, "POST", fmt.Sprintf("%s/api/conversations/%d/messages", base, conv.ID), token, map[string]any{"client_msg_id": "mention-discovery-1", "type": "text", "payload": map[string]string{"text": "@helper discover"}})
+	if r.status != http.StatusOK {
+		t.Fatalf("send mention status=%d body=%s", r.status, r.body)
+	}
+	var found bool
+	for i := 0; i < 30; i++ {
+		time.Sleep(25 * time.Millisecond)
+		messages, _, _ := st.MessagesAfter(conv.ID, 0, 20)
+		for _, message := range messages {
+			if message.SenderName == "Helper" {
+				found = true
+			}
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		t.Fatal("mention did not use discovered model")
+	}
+	select {
+	case model := <-calledModel:
+		if model != "discovered-model" {
+			t.Fatalf("discovered model was not selected: %q", model)
+		}
+	default:
+		t.Fatal("model endpoint was not called")
+	}
+}
+
+func TestAutomationFailureVisibleAndContextRecovers(t *testing.T) {
+	captured := make(chan []string, 1)
+	attempt := 0
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		if attempt == 1 {
+			http.Error(w, "provider-secret-diagnostic", http.StatusUnauthorized)
+			return
+		}
+		var request struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		var texts []string
+		for _, message := range request.Messages {
+			texts = append(texts, message.Content)
+		}
+		captured <- texts
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": "recovered answer"}}}})
+	}))
+	defer modelServer.Close()
+	base, st := startTestServer(t, config.AutomationIdentity{ID: "helper", Name: "helper", DisplayName: "Helper", Mode: "api", Enabled: true, Endpoint: modelServer.URL, DefaultModel: "test", MentionEnabled: true})
+	ha, _ := auth.HashPassword("pw-alice")
+	_, _ = st.CreateUser("alice", "Alice", ha)
+	hb, _ := auth.HashPassword("pw-bob")
+	bob, _ := st.CreateUser("bob", "Bob", hb)
+	token := login(t, base, "alice")
+	var conv struct {
+		ID int64 `json:"id"`
+	}
+	decode(t, call(t, "POST", base+"/api/conversations", token, map[string]int64{"peer_id": bob.ID}), &conv)
+	url := fmt.Sprintf("%s/api/conversations/%d/messages", base, conv.ID)
+	decode(t, call(t, "POST", url, token, map[string]any{"client_msg_id": "failed-mention", "type": "text", "payload": map[string]string{"text": "@helper first"}}), new(store.Message))
+	errorMessage := waitAutomationMessage(t, st, conv.ID, 1)
+	var errorPayload struct {
+		Error bool   `json:"error"`
+		Text  string `json:"text"`
+	}
+	if err := json.Unmarshal(errorMessage.Payload, &errorPayload); err != nil || !errorPayload.Error || errorPayload.Text == "" {
+		t.Fatalf("missing friendly failure message: %s", errorMessage.Payload)
+	}
+	if bytes.Contains(errorMessage.Payload, []byte("provider-secret-diagnostic")) {
+		t.Fatal("provider diagnostic leaked to the chat")
+	}
+	decode(t, call(t, "POST", url, token, map[string]any{"client_msg_id": "recovered-mention", "type": "text", "payload": map[string]string{"text": "@helper second"}}), new(store.Message))
+	answer := waitAutomationMessage(t, st, conv.ID, errorMessage.Seq)
+	if !bytes.Contains(answer.Payload, []byte("recovered answer")) {
+		t.Fatalf("did not recover: %s", answer.Payload)
+	}
+	texts := <-captured
+	if len(texts) != 3 || !strings.HasSuffix(texts[1], "@helper first") || !strings.HasSuffix(texts[2], "@helper second") || !strings.Contains(texts[1], "Alice") {
+		t.Fatalf("failure polluted context or latest prompt was duplicated: %q", texts)
+	}
+}
+
+func TestAgentContextWithExplicitModel(t *testing.T) {
+	type modelRequest struct {
+		Model    string              `json:"model"`
+		Messages []map[string]string `json:"messages"`
+	}
+	captured := make(chan modelRequest, 2)
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request modelRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		captured <- request
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": "agent answer"}}}})
+	}))
+	defer modelServer.Close()
+	base, st := startTestServer(t, config.AutomationIdentity{ID: "helper", Name: "helper", DisplayName: "Helper", Mode: "agent", Enabled: true, Endpoint: modelServer.URL, DefaultModel: "explicit-model", MentionEnabled: true, MemoryEnabled: true})
+	ha, _ := auth.HashPassword("pw-alice")
+	alice, _ := st.CreateUser("alice", "Alice", ha)
+	hb, _ := auth.HashPassword("pw-bob")
+	bob, _ := st.CreateUser("bob", "Bob", hb)
+	token := login(t, base, "alice")
+	var conv struct {
+		ID int64 `json:"id"`
+	}
+	decode(t, call(t, "POST", base+"/api/conversations", token, map[string]int64{"peer_id": bob.ID}), &conv)
+	check := func(prompt string) {
+		t.Helper()
+		select {
+		case request := <-captured:
+			if request.Model != "explicit-model" || len(request.Messages) < 2 || request.Messages[0]["role"] != "system" {
+				t.Fatalf("missing model or agent context: %+v", request)
+			}
+			var meta struct {
+				UserID         int64   `json:"user_id"`
+				ConversationID int64   `json:"conversation_id"`
+				Recipients     []int64 `json:"recipient_user_ids"`
+				Memory         bool    `json:"memory_enabled"`
+			}
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(request.Messages[0]["content"], "QuickConect agent context: ")), &meta); err != nil || meta.UserID != alice.ID || meta.ConversationID != conv.ID || len(meta.Recipients) != 2 || !meta.Memory {
+				t.Fatalf("incorrect agent metadata: %+v", request.Messages[0])
+			}
+			count := 0
+			for _, message := range request.Messages {
+				if message["content"] == prompt {
+					count++
+					if message["name"] != fmt.Sprintf("user_%d", alice.ID) {
+						t.Fatalf("missing sender identity: %+v", message)
+					}
+				}
+			}
+			if count != 1 {
+				t.Fatalf("prompt duplicated %d times: %+v", count, request.Messages)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("agent endpoint was not called")
+		}
+	}
+	r := call(t, "POST", base+"/api/automation/helper/invoke", token, map[string]any{"conversation_id": conv.ID, "prompt": "manual question", "model": "explicit-model", "client_msg_id": "agent-manual"})
+	if r.status != http.StatusOK {
+		t.Fatalf("invoke status=%d body=%s", r.status, r.body)
+	}
+	check("manual question")
+	decode(t, call(t, "POST", fmt.Sprintf("%s/api/conversations/%d/messages", base, conv.ID), token, map[string]any{"client_msg_id": "agent-mention", "type": "text", "payload": map[string]string{"text": "@helper follow up"}}), new(store.Message))
+	_ = waitAutomationMessage(t, st, conv.ID, 2)
+	check("@helper follow up")
+}
+
+func TestAgentMissingEndpointShowsError(t *testing.T) {
+	base, st := startTestServer(t, config.AutomationIdentity{ID: "helper", Name: "helper", DisplayName: "Helper", Mode: "agent", Enabled: true, MentionEnabled: true})
+	ha, _ := auth.HashPassword("pw-alice")
+	_, _ = st.CreateUser("alice", "Alice", ha)
+	hb, _ := auth.HashPassword("pw-bob")
+	bob, _ := st.CreateUser("bob", "Bob", hb)
+	token := login(t, base, "alice")
+	var conv struct {
+		ID int64 `json:"id"`
+	}
+	decode(t, call(t, "POST", base+"/api/conversations", token, map[string]int64{"peer_id": bob.ID}), &conv)
+	decode(t, call(t, "POST", fmt.Sprintf("%s/api/conversations/%d/messages", base, conv.ID), token, map[string]any{"client_msg_id": "agent-missing-endpoint", "type": "text", "payload": map[string]string{"text": "@helper hello"}}), new(store.Message))
+	message := waitAutomationMessage(t, st, conv.ID, 1)
+	var payload struct {
+		Error bool `json:"error"`
+	}
+	if json.Unmarshal(message.Payload, &payload) != nil || !payload.Error {
+		t.Fatalf("missing agent error: %s", message.Payload)
+	}
+}
+
+func waitAutomationMessage(t *testing.T, st *store.Store, convID, afterSeq int64) store.Message {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		messages, _, err := st.MessagesAfter(convID, afterSeq, 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, message := range messages {
+			if message.SenderName == "Helper" {
+				return message
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("automation response did not appear")
+	return store.Message{}
 }
 
 func uploadMedia(t *testing.T, base, token, content, mime string) apiResp {

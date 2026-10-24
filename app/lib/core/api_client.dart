@@ -6,6 +6,8 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'dart:typed_data';
+
 import 'models.dart';
 
 class ApiException implements Exception {
@@ -48,15 +50,15 @@ class ApiClient {
     String method,
     String path, {
     Map<String, dynamic>? body,
+    Duration timeout = const Duration(seconds: 15),
   }) async {
     http.Response resp;
     try {
       final uri = Uri.parse('$base$path');
       final req = http.Request(method, uri)..headers.addAll(_headers);
       if (body != null) req.body = jsonEncode(body);
-      resp = await http.Response.fromStream(
-        await _http.send(req),
-      ).timeout(const Duration(seconds: 15));
+      resp = await http.Response.fromStream(await _http.send(req))
+          .timeout(timeout);
     } catch (e) {
       throw ApiException('无法连接服务器：$e');
     }
@@ -109,6 +111,29 @@ class ApiClient {
   Future<User> me() async =>
       User.fromJson((await _req('GET', '/api/me')) as Map<String, dynamic>);
 
+  Future<String> uploadAvatar(
+    Uint8List bytes, {
+    String name = 'avatar.jpg',
+  }) async {
+    final req = http.MultipartRequest('POST', Uri.parse('$base/api/media'))
+      ..headers.addAll({'Authorization': 'Bearer $token'})
+      ..fields['kind'] = 'avatar'
+      ..fields['mime'] = name.toLowerCase().endsWith('.png')
+          ? 'image/png'
+          : 'image/jpeg'
+      ..files.add(http.MultipartFile.fromBytes('file', bytes, filename: name));
+    final resp = await http.Response.fromStream(await req.send());
+    if (resp.statusCode >= 300) throw ApiException('头像上传失败', resp.statusCode);
+    return (jsonDecode(utf8.decode(resp.bodyBytes))
+            as Map<String, dynamic>)['media_id']
+        as String;
+  }
+
+  Future<User> setAvatar(String mediaId) async => User.fromJson(
+    (await _req('PUT', '/api/me/avatar', body: {'media_id': mediaId}))
+        as Map<String, dynamic>,
+  );
+
   /// 当前设备信息（含推送铃主题）。
   Future<DeviceInfo> device() async {
     final j = await _req('GET', '/api/device') as Map<String, dynamic>;
@@ -120,11 +145,19 @@ class ApiClient {
     );
   }
 
+  /// 让服务器向本机的推送铃发一条测试通知。
+  /// 服务端复用真实推送路径，因此成功即代表离线推送可用。
+  Future<void> pushTest() async {
+    await _req('POST', '/api/push/test', body: const <String, dynamic>{});
+  }
+
   // ---------- 名册与会话 ----------
 
   Future<List<User>> users() async {
     final j = await _req('GET', '/api/users');
-    return (j as List).map((e) => User.fromJson(e as Map<String, dynamic>)).toList();
+    return (j as List)
+        .map((e) => User.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   Future<List<Conversation>> conversations() async {
@@ -135,20 +168,36 @@ class ApiClient {
   }
 
   Future<int> openDM(int peerId) async {
-    final j = await _req('POST', '/api/conversations', body: {'peer_id': peerId});
+    final j = await _req(
+      'POST',
+      '/api/conversations',
+      body: {'peer_id': peerId},
+    );
     return (j as Map<String, dynamic>)['id'] as int;
   }
 
   // ---------- 消息 ----------
 
-  Future<List<Message>> messagesAfter(int convId, int afterSeq, {int limit = 200}) async {
-    final j = await _req('GET', '/api/conversations/$convId/messages?after_seq=$afterSeq&limit=$limit');
+  Future<List<Message>> messagesAfter(
+    int convId,
+    int afterSeq, {
+    int limit = 200,
+  }) async {
+    final j = await _req(
+      'GET',
+      '/api/conversations/$convId/messages?after_seq=$afterSeq&limit=$limit',
+    );
     return ((j as Map<String, dynamic>)['messages'] as List)
         .map((e) => Message.fromJson(e as Map<String, dynamic>))
         .toList();
   }
 
-  Future<Message> send(int convId, String clientMsgId, String type, Map<String, dynamic> payload) async {
+  Future<Message> send(
+    int convId,
+    String clientMsgId,
+    String type,
+    Map<String, dynamic> payload,
+  ) async {
     final j = await _req(
       'POST',
       '/api/conversations/$convId/messages',
@@ -157,7 +206,130 @@ class ApiClient {
     return Message.fromJson(j as Map<String, dynamic>);
   }
 
+  Future<Message> invokeAutomation(
+    String identity,
+    int convId,
+    String clientMsgId,
+    String prompt, {
+    String model = '',
+  }) async {
+    final j = await _req(
+      'POST',
+      '/api/automation/$identity/invoke',
+      timeout: const Duration(minutes: 3),
+      body: {
+        'conversation_id': convId,
+        'client_msg_id': clientMsgId,
+        'prompt': prompt,
+        if (model.trim().isNotEmpty) 'model': model.trim(),
+      },
+    );
+    return Message.fromJson(j as Map<String, dynamic>);
+  }
+
+  Future<List<AutomationIdentity>> automationIdentities() async {
+    final j = await _req('GET', '/api/automation');
+    return (j as List)
+        .map((e) => AutomationIdentity.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<List<AutomationThread>> automationThreads(String identity) async {
+    final j = await _req('GET', '/api/automation/$identity/threads');
+    return (j as List)
+        .map((e) => AutomationThread.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<List<String>> automationModels(String identity) async {
+    final j = await _req('GET', '/api/automation/$identity/models');
+    return ((j as Map<String, dynamic>)['models'] as List? ?? const [])
+        .map((item) => item.toString())
+        .toList();
+  }
+
+  Future<AutomationThread> createAutomationThread(
+    String identity, {
+    String title = '',
+    String model = '',
+  }) async {
+    final j = await _req(
+      'POST',
+      '/api/automation/$identity/threads',
+      body: {'title': title, 'model': model},
+    );
+    return AutomationThread.fromJson(j as Map<String, dynamic>);
+  }
+
+  Future<AutomationThread> updateAutomationThread(
+    String identity,
+    int conversationId, {
+    String? title,
+    String? model,
+    bool updateSystemPrompt = false,
+    String? systemPrompt,
+  }) async {
+    final j = await _req(
+      'PUT',
+      '/api/automation/$identity/threads/$conversationId',
+      body: {
+        'title': ?title,
+        'model': ?model,
+        if (updateSystemPrompt) 'system_prompt': systemPrompt,
+      },
+    );
+    return AutomationThread.fromJson(j as Map<String, dynamic>);
+  }
+
+  Future<void> deleteAutomationThread(
+    String identity,
+    int conversationId,
+  ) async {
+    await _req('DELETE', '/api/automation/$identity/threads/$conversationId');
+  }
+
   Future<void> markRead(int convId, int seq) async {
     await _req('POST', '/api/conversations/$convId/read', body: {'seq': seq});
   }
+
+  Future<Message> editMessage(Message message, String text) async =>
+      Message.fromJson(
+        await _req(
+          'PUT',
+          '/api/conversations/${message.convId}/messages/${message.id}',
+          body: {'text': text},
+        ) as Map<String, dynamic>,
+      );
+
+  Future<Message> retractMessage(Message message) async => Message.fromJson(
+    await _req(
+      'DELETE',
+      '/api/conversations/${message.convId}/messages/${message.id}',
+    ) as Map<String, dynamic>,
+  );
+
+  Future<Map<String, dynamic>> messageChanges(
+    int convId,
+    int afterRevision,
+  ) async => await _req(
+    'GET',
+    '/api/conversations/$convId/changes?after_revision=$afterRevision',
+  ) as Map<String, dynamic>;
+
+  Future<Message> regenerateMessage(
+    String identity,
+    Message message,
+    String clientMsgId,
+  ) async => Message.fromJson(
+    await _req(
+      'POST',
+      '/api/automation/$identity/regenerate',
+      body: {
+        'conversation_id': message.convId,
+        'message_id': message.id,
+        'client_msg_id': clientMsgId,
+      },
+      timeout: const Duration(minutes: 3),
+    ) as Map<String, dynamic>,
+  );
 }

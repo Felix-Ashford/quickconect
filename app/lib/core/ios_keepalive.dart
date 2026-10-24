@@ -49,7 +49,8 @@ class IosKeepAlive {
     final b = BytesBuilder();
     void str(String s) => b.add(s.codeUnits);
     void u16(int v) => b.add([v & 0xff, (v >> 8) & 0xff]);
-    void u32(int v) => b.add([v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff]);
+    void u32(int v) =>
+        b.add([v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff]);
 
     str('RIFF');
     u32(36 + dataLen);

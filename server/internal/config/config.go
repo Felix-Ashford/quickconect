@@ -4,27 +4,59 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Listen      string `yaml:"listen"`       // 监听地址，如 ":8443"
-	TLSEnabled  bool   `yaml:"tls_enabled"`  // 生产必须 true；本地测试可关
-	TLSCert     string `yaml:"tls_cert"`
-	TLSKey      string `yaml:"tls_key"`
-	DBPath      string `yaml:"db_path"`      // SQLite 文件路径
-	MediaPath   string `yaml:"media_path"`   // 媒体文件目录
-	MediaMaxMB  int64  `yaml:"media_max_mb"` // 单文件上限
-	UserQuotaGB int64  `yaml:"user_quota_gb"`
-	Ntfy        Ntfy   `yaml:"ntfy"`
+	Listen      string           `yaml:"listen"`      // 监听地址，如 ":8443"
+	TLSEnabled  bool             `yaml:"tls_enabled"` // 生产必须 true；本地测试可关
+	TLSCert     string           `yaml:"tls_cert"`
+	TLSKey      string           `yaml:"tls_key"`
+	DBPath      string           `yaml:"db_path"`      // SQLite 文件路径
+	MediaPath   string           `yaml:"media_path"`   // 媒体文件目录
+	MediaMaxMB  int64            `yaml:"media_max_mb"` // 单文件上限
+	UserQuotaGB int64            `yaml:"user_quota_gb"`
+	Ntfy        Ntfy             `yaml:"ntfy"`
+	Automation  AutomationConfig `yaml:"automation"`
+}
+
+type AutomationConfig struct {
+	Identities []AutomationIdentity `yaml:"identities"`
+}
+
+type AutomationIdentity struct {
+	AvatarMediaID        string   `yaml:"avatar_media_id"`
+	ContextMaxChars      int      `yaml:"context_max_chars"`
+	MentionSystemPrompt  *string  `yaml:"mention_system_prompt"`
+	DirectSystemPrompt   string   `yaml:"direct_system_prompt"`
+	TitleSystemPrompt    *string  `yaml:"title_system_prompt"`
+	ID                   string   `yaml:"id"`
+	Name                 string   `yaml:"name"`
+	DisplayName          string   `yaml:"display_name"`
+	Mode                 string   `yaml:"mode"`
+	Endpoint             string   `yaml:"endpoint"`
+	APIKey               string   `yaml:"api_key"`
+	DefaultModel         string   `yaml:"default_model"`
+	ModelFallbacks       []string `yaml:"model_fallbacks"`
+	CLIProxyURL          string   `yaml:"cli_proxy_url"`
+	MentionEnabled       bool     `yaml:"mention_enabled"`
+	PrivateDirectory     bool     `yaml:"private_directory"`
+	MemoryEnabled        bool     `yaml:"memory_enabled"`
+	WebSearchEnabled     bool     `yaml:"web_search_enabled"`
+	ServerControlEnabled bool     `yaml:"server_control_enabled"`
+	AllowedUsers         []int64  `yaml:"allowed_users"`
+	PushTargets          string   `yaml:"push_targets"`
+	Enabled              bool     `yaml:"enabled"`
+	WebhookToken         string   `yaml:"webhook_token"`
 }
 
 type Ntfy struct {
 	Enabled         bool   `yaml:"enabled"`
-	BaseURL         string `yaml:"base_url"`          // https://ntfy.sh
-	CoalesceSeconds int    `yaml:"coalesce_seconds"`  // 合并节流窗口
-	IncludeSender   bool   `yaml:"include_sender"`    // ping 正文是否附带发送者昵称（默认只报数量，元数据最小化）
+	BaseURL         string `yaml:"base_url"`         // https://ntfy.sh
+	CoalesceSeconds int    `yaml:"coalesce_seconds"` // 合并节流窗口
+	IncludeSender   bool   `yaml:"include_sender"`   // ping 正文是否附带发送者昵称（默认只报数量，元数据最小化）
 }
 
 // Load 读取配置文件，未填写的字段取默认值。
@@ -36,6 +68,16 @@ func Load(path string) (*Config, error) {
 	c := &Config{}
 	if err := yaml.Unmarshal(b, c); err != nil {
 		return nil, fmt.Errorf("解析配置 %s: %w", path, err)
+	}
+	// Manager stores automation identities separately so the main server config
+	// can be edited independently. A missing sidecar is valid.
+	automationPath := filepath.Join(filepath.Dir(path), "automation.yaml")
+	if automationBytes, automationErr := os.ReadFile(automationPath); automationErr == nil {
+		var sidecar AutomationConfig
+		if err := yaml.Unmarshal(automationBytes, &sidecar); err != nil {
+			return nil, fmt.Errorf("解析自动化配置 %s: %w", automationPath, err)
+		}
+		c.Automation = sidecar
 	}
 	c.applyDefaults()
 	if err := c.validate(); err != nil {
@@ -66,6 +108,22 @@ func (c *Config) applyDefaults() {
 	}
 	if c.UserQuotaGB <= 0 {
 		c.UserQuotaGB = 10
+	}
+	for i := range c.Automation.Identities {
+		identity := &c.Automation.Identities[i]
+		if identity.ContextMaxChars <= 0 {
+			identity.ContextMaxChars = 60000
+		}
+		if identity.MentionSystemPrompt == nil {
+			prompt := DefaultMentionPrompt
+			identity.MentionSystemPrompt = &prompt
+		}
+		if identity.Mode == "" {
+			identity.Mode = "api"
+		}
+		if identity.PushTargets == "" {
+			identity.PushTargets = "both"
+		}
 	}
 	if c.Ntfy.Enabled && c.Ntfy.BaseURL == "" {
 		c.Ntfy.BaseURL = "https://ntfy.sh"

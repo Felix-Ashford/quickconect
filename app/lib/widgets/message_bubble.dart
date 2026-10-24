@@ -13,25 +13,29 @@ import '../core/models.dart';
 import '../core/session.dart';
 import '../core/voice_player.dart';
 import 'image_viewer.dart';
+import 'rich_text_renderer.dart';
 
 /// 消息气泡：按类型渲染文字/图片/语音/文件/表情。
 /// 发送失败标红，点击重试（重试复用已上传的 media_id，不重复上传）。
 class MessageBubble extends StatelessWidget {
   final Message message;
   final bool isMine;
+  final bool isAutomation;
   final VoidCallback? onRetry;
+  final VoidCallback? onEdit;
+  final VoidCallback? onRetract;
+  final VoidCallback? onRegenerate;
 
   const MessageBubble({
     super.key,
     required this.message,
     required this.isMine,
+    this.isAutomation = false,
     this.onRetry,
+    this.onEdit,
+    this.onRetract,
+    this.onRegenerate,
   });
-
-  String get _time {
-    final t = DateTime.fromMillisecondsSinceEpoch(message.createdAt * 1000);
-    return '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -41,44 +45,57 @@ class MessageBubble extends StatelessWidget {
     final m = message;
 
     // 表情贴纸：不带气泡背景
-    if (m.type == 'sticker') {
-      return _StickerContent(
-        key: ValueKey(m.id),
-        session: session,
-        m: m,
-      );
+    if (m.type == 'sticker' && !m.isRetracted && onRetract == null) {
+      return _StickerContent(key: ValueKey(m.id), session: session, m: m);
     }
 
     final failed = m.status == MsgStatus.failed;
     final bg = failed
         ? cs.errorContainer
+        : isAutomation
+        ? qc.aiBubble
         : isMine
-            ? qc.myBubble
-            : qc.otherBubble;
+        ? qc.myBubble
+        : qc.otherBubble;
     final fg = failed
         ? cs.onErrorContainer
+        : isAutomation
+        ? qc.aiBubbleText
         : isMine
-            ? qc.myBubbleText
-            : qc.otherBubbleText;
+        ? qc.myBubbleText
+        : qc.otherBubbleText;
 
-    final Widget content = switch (m.type) {
-      'image' => _ImageContent(session: session, m: m),
-      'voice' => _VoiceContent(session: session, m: m),
-      'file' => _FileContent(session: session, m: m),
-      _ => SelectableText(m.text, style: TextStyle(fontSize: 15, color: fg)),
-    };
+    final Widget content = m.isRetracted
+        ? Text(
+            '消息已撤回',
+            style: TextStyle(
+              color: fg.withValues(alpha: .6),
+              fontStyle: FontStyle.italic,
+            ),
+          )
+        : switch (m.type) {
+            'image' => _ImageContent(session: session, m: m),
+            'sticker' => _StickerContent(
+              key: ValueKey(m.id),
+              session: session,
+              m: m,
+            ),
+            'voice' => _VoiceContent(session: session, m: m),
+            'file' => _FileContent(session: session, m: m),
+            _ => RichTextRenderer(
+              text: m.text,
+              format: m.format,
+              formatVersion: m.formatVersion,
+              color: fg,
+            ),
+          };
 
     final bubble = Container(
-      margin: EdgeInsets.only(
-        left: isMine ? 64 : 12,
-        right: isMine ? 12 : 64,
-        top: 4,
-        bottom: 4,
-      ),
+      key: ValueKey('message-surface-${m.id}'),
+      margin: const EdgeInsets.only(right: 12, top: 4, bottom: 4),
       padding: m.type == 'image'
           ? const EdgeInsets.all(4)
           : const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      constraints: const BoxConstraints(maxWidth: 320),
       decoration: BoxDecoration(
         color: bg,
         // 四角统一圆弧（无气泡尾巴造型）
@@ -88,12 +105,16 @@ class MessageBubble extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (!isMine && m.senderName.isNotEmpty && m.type != 'image')
+          if (m.senderName.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(bottom: 2),
               child: Text(
                 m.senderName,
-                style: TextStyle(fontSize: 11, color: cs.primary, fontWeight: FontWeight.w600),
+                style: TextStyle(
+                  fontSize: 11,
+                  color: cs.primary,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           content,
@@ -101,12 +122,64 @@ class MessageBubble extends StatelessWidget {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(_time,
+              Text(
+                formatMessageTime(m.createdAt),
+                style: TextStyle(
+                  fontSize: 10,
+                  color: fg.withValues(alpha: 0.55),
+                ),
+              ),
+              if (m.isEdited && !m.isRetracted) ...[
+                const SizedBox(width: 4),
+                Text(
+                  '已编辑',
                   style: TextStyle(
-                      fontSize: 10, color: fg.withValues(alpha: 0.55))),
+                    fontSize: 10,
+                    color: fg.withValues(alpha: .55),
+                  ),
+                ),
+              ],
+              if (onEdit != null || onRetract != null || onRegenerate != null)
+                SizedBox(
+                  width: 28,
+                  height: 24,
+                  child: PopupMenuButton<String>(
+                    tooltip: '消息操作',
+                    padding: EdgeInsets.zero,
+                    icon: Icon(Icons.more_horiz, size: 18, color: fg),
+                    onSelected: (action) {
+                      switch (action) {
+                        case 'edit':
+                          onEdit?.call();
+                        case 'retract':
+                          onRetract?.call();
+                        case 'regenerate':
+                          onRegenerate?.call();
+                      }
+                    },
+                    itemBuilder: (_) => [
+                      if (onEdit != null)
+                        const PopupMenuItem(value: 'edit', child: Text('修改消息')),
+                      if (onRetract != null)
+                        const PopupMenuItem(
+                          value: 'retract',
+                          child: Text('撤回消息'),
+                        ),
+                      if (onRegenerate != null)
+                        const PopupMenuItem(
+                          value: 'regenerate',
+                          child: Text('重新生成回复'),
+                        ),
+                    ],
+                  ),
+                ),
               if (m.status == MsgStatus.sending) ...[
                 const SizedBox(width: 4),
-                Icon(Icons.schedule, size: 11, color: fg.withValues(alpha: 0.55)),
+                Icon(
+                  Icons.schedule,
+                  size: 11,
+                  color: fg.withValues(alpha: 0.55),
+                ),
               ],
               if (failed) ...[
                 const SizedBox(width: 4),
@@ -119,14 +192,72 @@ class MessageBubble extends StatelessWidget {
     );
 
     final align = Align(
-      alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
-      child: bubble,
+      alignment: Alignment.centerLeft,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 10, right: 6, top: 6),
+            child: MessageAvatar(
+              session: session,
+              mediaId: m.senderAvatarMediaId,
+              name: m.senderName,
+            ),
+          ),
+          Flexible(child: bubble),
+        ],
+      ),
     );
     if (failed) {
       return GestureDetector(onTap: onRetry, child: align);
     }
     return align;
   }
+}
+
+class MessageAvatar extends StatelessWidget {
+  final Session session;
+  final String mediaId;
+  final String name;
+  const MessageAvatar({
+    super.key,
+    required this.session,
+    required this.mediaId,
+    required this.name,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final initial = name.trim().isEmpty
+        ? '?'
+        : name.trim().characters.first.toUpperCase();
+    if (mediaId.isEmpty) {
+      return CircleAvatar(radius: 18, child: Text(initial));
+    }
+    return FutureBuilder<Uint8List>(
+      future: session.mediaStore.downloadAvatar(mediaId),
+      builder: (context, snap) {
+        if (snap.data == null) {
+          return CircleAvatar(radius: 18, child: Text(initial));
+        }
+        return CircleAvatar(
+          radius: 18,
+          backgroundImage: MemoryImage(snap.data!),
+        );
+      },
+    );
+  }
+}
+
+String formatMessageTime(int createdAtSeconds) {
+  final t = DateTime.fromMillisecondsSinceEpoch(createdAtSeconds * 1000);
+  final date =
+      '${t.year.toString().padLeft(4, '0')}-'
+      '${t.month.toString().padLeft(2, '0')}-'
+      '${t.day.toString().padLeft(2, '0')}';
+  final time =
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+  return '$date $time';
 }
 
 // ---------- 图片 ----------
@@ -145,6 +276,10 @@ class _ImageContentState extends State<_ImageContent> {
   int _attempt = 0;
   int _loggedAttempt = -1;
   Timer? _retryTimer;
+  Future<Uint8List>? _imageFuture;
+  String? _futureMediaId;
+  Future<Uint8List>? _fullImageFuture;
+  String? _fullImageMediaId;
 
   Message get m => widget.m;
   Session get session => widget.session;
@@ -158,9 +293,41 @@ class _ImageContentState extends State<_ImageContent> {
 
   void _retry() {
     if (!mounted) return;
-    final mediaId = (m.payload['thumb_media_id'] ?? m.payload['media_id']) as String?;
+    final mediaId =
+        (m.payload['thumb_media_id'] ?? m.payload['media_id']) as String?;
     if (mediaId != null) session.mediaStore.retryDownload(mediaId);
-    setState(() => _attempt++);
+    setState(() {
+      _attempt++;
+      _futureMediaId = mediaId;
+      _imageFuture = mediaId == null
+          ? null
+          : session.mediaStore.download(mediaId);
+      final fullId = m.payload['media_id'] as String? ?? mediaId;
+      _fullImageMediaId = fullId;
+      _fullImageFuture = fullId == null
+          ? null
+          : session.mediaStore.download(fullId);
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _ImageContent oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final thumbId =
+        (m.payload['thumb_media_id'] ?? m.payload['media_id']) as String?;
+    final fullId = m.payload['media_id'] as String? ?? thumbId;
+    if (thumbId != _futureMediaId) {
+      _futureMediaId = thumbId;
+      _imageFuture = thumbId == null
+          ? null
+          : session.mediaStore.download(thumbId);
+    }
+    if (fullId != _fullImageMediaId) {
+      _fullImageMediaId = fullId;
+      _fullImageFuture = fullId == null
+          ? null
+          : session.mediaStore.download(fullId);
+    }
   }
 
   @override
@@ -186,17 +353,31 @@ class _ImageContentState extends State<_ImageContent> {
           mainAxisSize: MainAxisSize.min,
           children: [
             const Icon(Icons.image_outlined),
-            Text(m.status == MsgStatus.failed ? '发送失败' : '发送中…',
-                style: const TextStyle(fontSize: 12)),
+            Text(
+              m.status == MsgStatus.failed ? '发送失败' : '发送中…',
+              style: const TextStyle(fontSize: 12),
+            ),
           ],
         ),
       );
     }
+    if (_futureMediaId != mediaId || _imageFuture == null) {
+      _futureMediaId = mediaId;
+      _imageFuture = session.mediaStore.download(mediaId);
+    }
+    final fullId = m.payload['media_id'] as String? ?? mediaId;
+    if (_fullImageMediaId != fullId || _fullImageFuture == null) {
+      _fullImageMediaId = fullId;
+      _fullImageFuture = session.mediaStore.download(fullId);
+    }
+    final fullImage = _fullImageFuture!;
+    final fileName = m.payload['name'] as String? ?? 'image.jpg';
     return GestureDetector(
-      onTap: () => showImageViewer(
-        context,
-        session.mediaStore.download(m.payload['media_id'] as String? ?? mediaId),
-      ),
+      onTap: () => showImageViewer(context, fullImage, fileName: fileName),
+      onSecondaryTap: () => saveImage(context, fullImage, fileName),
+      onLongPress: Platform.isIOS
+          ? () => saveImage(context, fullImage, fileName)
+          : null,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(12),
         child: SizedBox(
@@ -205,22 +386,26 @@ class _ImageContentState extends State<_ImageContent> {
             aspectRatio: _aspect,
             child: FutureBuilder<Uint8List>(
               key: ValueKey(_attempt),
-              future: session.mediaStore.download(mediaId),
+              future: _imageFuture,
               builder: (context, snap) {
                 if (snap.connectionState != ConnectionState.done) {
                   return Container(
-                      color: Colors.black12,
-                      alignment: Alignment.center,
-                      child: const SizedBox(
-                          width: 18, height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2)));
+                    color: Colors.black12,
+                    alignment: Alignment.center,
+                    child: const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  );
                 }
                 if (snap.hasError || snap.data == null) {
                   // 记录真实失败原因到 %TEMP%\quickconect_client.log 供诊断
                   if (_loggedAttempt != _attempt) {
                     _loggedAttempt = _attempt;
                     MediaStore.log(
-                        '图片渲染失败 mediaId=$mediaId attempt=$_attempt err=${snap.error}');
+                      '图片渲染失败 mediaId=$mediaId attempt=$_attempt err=${snap.error}',
+                    );
                   }
                   if (_attempt <= _maxAutoRetry && _retryTimer == null) {
                     _retryTimer = Timer(const Duration(seconds: 3), () {
@@ -244,8 +429,11 @@ class _ImageContentState extends State<_ImageContent> {
                     ),
                   );
                 }
-                return Image.memory(snap.data!,
-                    fit: BoxFit.cover, gaplessPlayback: true);
+                return Image.memory(
+                  snap.data!,
+                  fit: BoxFit.cover,
+                  gaplessPlayback: true,
+                );
               },
             ),
           ),
@@ -285,12 +473,18 @@ class _VoiceContent extends StatelessWidget {
                 try {
                   final bytes = await session.mediaStore.download(mediaId);
                   final ext = (m.payload['ext'] as String?) ?? 'm4a';
-                  final f = await session.mediaStore.saveToTemp(mediaId, bytes, ext: ext);
+                  final f = await session.mediaStore.saveToTemp(
+                    mediaId,
+                    bytes,
+                    ext: ext,
+                  );
                   await player.toggle(mediaId, f.path);
                 } catch (_) {}
               },
-              icon: Icon(playingId == mediaId ? Icons.pause_circle : Icons.play_circle,
-                  size: 34),
+              icon: Icon(
+                playingId == mediaId ? Icons.pause_circle : Icons.play_circle,
+                size: 34,
+              ),
             ),
           ),
           const SizedBox(width: 4),
@@ -327,6 +521,10 @@ class _FileContent extends StatelessWidget {
   const _FileContent({required this.session, required this.m});
 
   Future<void> _save(BuildContext context) async {
+    final object = context.findRenderObject();
+    final shareOrigin = object is RenderBox && object.hasSize
+        ? object.localToGlobal(Offset.zero) & object.size
+        : null;
     try {
       final name = m.payload['name'] as String? ?? '文件';
       final mediaId = m.payload['media_id'] as String;
@@ -337,23 +535,30 @@ class _FileContent extends StatelessWidget {
         if (loc == null) return;
         await File(loc.path).writeAsBytes(bytes);
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('已保存到 ${loc.path}')));
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('已保存到 ${loc.path}')));
         }
+      } else if (Platform.isIOS) {
+        final ext = name.contains('.') ? name.split('.').last : 'bin';
+        final f = await session.mediaStore.saveToTemp(mediaId, bytes, ext: ext);
+        await shareFilesFromOrigin(shareOrigin, [XFile(f.path)], text: name);
       } else {
         final docs = await getApplicationDocumentsDirectory();
-        final dir = Directory('${docs.path}${Platform.pathSeparator}QuickConect');
+        final dir = Directory(
+          '${docs.path}${Platform.pathSeparator}QuickConect',
+        );
         if (!dir.existsSync()) dir.createSync(recursive: true);
         final f = File('${dir.path}${Platform.pathSeparator}$name');
         await f.writeAsBytes(bytes);
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('已保存到 ${f.path}')));
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('已保存到 ${f.path}')));
         }
       }
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('保存失败：$e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('保存失败：$e')));
       }
     }
   }
@@ -364,6 +569,7 @@ class _FileContent extends StatelessWidget {
     final size = (m.payload['size'] as num?)?.toInt() ?? 0;
     return InkWell(
       onTap: m.isPending ? null : () => _save(context),
+      onLongPress: m.isPending ? null : () => _save(context),
       borderRadius: BorderRadius.circular(8),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -376,8 +582,10 @@ class _FileContent extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                Text(humanSize(size),
-                    style: const TextStyle(fontSize: 11, color: Colors.black54)),
+                Text(
+                  humanSize(size),
+                  style: const TextStyle(fontSize: 11, color: Colors.black54),
+                ),
               ],
             ),
           ),
@@ -389,29 +597,88 @@ class _FileContent extends StatelessWidget {
 
 // ---------- 表情贴纸 ----------
 
-class _StickerContent extends StatelessWidget {
+class _StickerContent extends StatefulWidget {
   final Session session;
   final Message m;
   const _StickerContent({super.key, required this.session, required this.m});
 
   @override
+  State<_StickerContent> createState() => _StickerContentState();
+}
+
+class _StickerContentState extends State<_StickerContent> {
+  String? _mediaId;
+  Future<Uint8List>? _imageFuture;
+
+  void _load(String? mediaId) {
+    _mediaId = mediaId;
+    _imageFuture = mediaId == null
+        ? null
+        : widget.session.mediaStore.download(mediaId);
+  }
+
+  @override
+  void didUpdateWidget(covariant _StickerContent oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final nextId = widget.m.payload['media_id'] as String?;
+    if (nextId != _mediaId) _load(nextId);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final mediaId = m.payload['media_id'] as String?;
+    final mediaId = widget.m.payload['media_id'] as String?;
     if (mediaId == null) return const SizedBox.shrink();
+    if (_mediaId != mediaId || _imageFuture == null) _load(mediaId);
     return GestureDetector(
-      onTap: () => showImageViewer(context, session.mediaStore.download(mediaId)),
+      onTap: () => showImageViewer(
+        context,
+        widget.session.mediaStore.download(mediaId),
+        fileName: widget.m.payload['name'] as String? ?? 'sticker.png',
+      ),
+      onSecondaryTap: () => saveImage(
+        context,
+        widget.session.mediaStore.download(mediaId),
+        widget.m.payload['name'] as String? ?? 'sticker.png',
+      ),
+      onLongPress: Platform.isIOS
+          ? () => saveImage(
+              context,
+              widget.session.mediaStore.download(mediaId),
+              widget.m.payload['name'] as String? ?? 'sticker.png',
+            )
+          : null,
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        child: FutureBuilder<Uint8List>(
-          future: session.mediaStore.download(mediaId),
-          builder: (context, snap) {
-            if (snap.data == null) {
-              return const SizedBox(
-                  width: 110, height: 110,
-                  child: Center(child: CircularProgressIndicator(strokeWidth: 2)));
-            }
-            return Image.memory(snap.data!, width: 110, height: 110, fit: BoxFit.contain);
-          },
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            FutureBuilder<Uint8List>(
+              future: _imageFuture,
+              builder: (context, snap) {
+                if (snap.data == null) {
+                  return const SizedBox(
+                    width: 110,
+                    height: 110,
+                    child: Center(
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  );
+                }
+                return Image.memory(
+                  snap.data!,
+                  width: 110,
+                  height: 110,
+                  fit: BoxFit.contain,
+                );
+              },
+            ),
+            const SizedBox(height: 2),
+            Text(
+              formatMessageTime(widget.m.createdAt),
+              style: const TextStyle(fontSize: 10, color: Colors.black54),
+            ),
+          ],
         ),
       ),
     );

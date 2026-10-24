@@ -2,7 +2,7 @@
 // 用一条不含消息内容的计数 ping 经 APNs/FCM 把用户拉回 App。
 //
 // 隐私边界：默认正文只有「您有 N 条新消息」，不含内容与发送者昵称
-//（include_sender=true 时才附带昵称）。
+// （include_sender=true 时才附带昵称）。
 package push
 
 import (
@@ -122,4 +122,26 @@ func (c *Coalescer) publish(topic, text string) error {
 		return fmt.Errorf("ntfy 返回 %s", resp.Status)
 	}
 	return nil
+}
+
+// PublishTest 向该用户已注册的全部推送主题发一条测试 ping。
+// 走的是与真实消息完全相同的路径，因此「测试收到」即代表真推送可用。
+func (c *Coalescer) PublishTest(userID int64) error {
+	if !c.cfg.Enabled {
+		return fmt.Errorf("服务器未启用推送铃")
+	}
+	topics, err := c.store.PushTopicsForUser(userID)
+	if err != nil {
+		return err
+	}
+	if len(topics) == 0 {
+		return fmt.Errorf("本机尚未注册推送主题，请重新登录后再试")
+	}
+	var firstErr error
+	for _, topic := range topics {
+		if err := c.publish(topic, "推送铃配置成功！收到这条说明通知链路正常。"); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }

@@ -9,8 +9,130 @@ import '../core/session.dart';
 import '../core/sticker_store.dart';
 
 const _emojiGroups = <String, List<String>>{
-  '常用': ['😀','😂','🤣','😊','😍','😘','😜','😎','🤔','😴','😭','😡','🥳','😇','🙃','😅','🤝','👍','👎','👏','🙏','💪','🤙','✌️','❤️','💔','💯','🔥','🎉','🎂','🎁','🍺','☕','🍚','🍜','🍉','🌸','☀️','🌙','⭐','🚗','✈️','🏠','⚽','🏀','🎮','🎵','📱','💰','💊','📚','✅','❌','❓','❗','💤','🚀','🌙','🐱','🐶'],
-  '更多': ['🥰','😳','😤','😰','🤯','😬','🥺','🤗','😶','🙄','😮','🤐','🤒','🤕','🤧','😷','🤠','🥳','🤖','👻','💩','🎃','🌚','🌝','🌽','🍔','🍟','🍕','🍩','🍪','🧋','🍓','🥑','🌶️','🍄','🌊','🌈','⚡','❄️','🌪️','🌍','🚴','🏖️','🎡','🗼','🗽','🧧','🀄','🎲','🪙','💎','🔔','📌','🔑','⏰','🗓️','🧸','🎈','🛒','💡'],
+  '常用': [
+    '😀',
+    '😂',
+    '🤣',
+    '😊',
+    '😍',
+    '😘',
+    '😜',
+    '😎',
+    '🤔',
+    '😴',
+    '😭',
+    '😡',
+    '🥳',
+    '😇',
+    '🙃',
+    '😅',
+    '🤝',
+    '👍',
+    '👎',
+    '👏',
+    '🙏',
+    '💪',
+    '🤙',
+    '✌️',
+    '❤️',
+    '💔',
+    '💯',
+    '🔥',
+    '🎉',
+    '🎂',
+    '🎁',
+    '🍺',
+    '☕',
+    '🍚',
+    '🍜',
+    '🍉',
+    '🌸',
+    '☀️',
+    '🌙',
+    '⭐',
+    '🚗',
+    '✈️',
+    '🏠',
+    '⚽',
+    '🏀',
+    '🎮',
+    '🎵',
+    '📱',
+    '💰',
+    '💊',
+    '📚',
+    '✅',
+    '❌',
+    '❓',
+    '❗',
+    '💤',
+    '🚀',
+    '🌙',
+    '🐱',
+    '🐶',
+  ],
+  '更多': [
+    '🥰',
+    '😳',
+    '😤',
+    '😰',
+    '🤯',
+    '😬',
+    '🥺',
+    '🤗',
+    '😶',
+    '🙄',
+    '😮',
+    '🤐',
+    '🤒',
+    '🤕',
+    '🤧',
+    '😷',
+    '🤠',
+    '🥳',
+    '🤖',
+    '👻',
+    '💩',
+    '🎃',
+    '🌚',
+    '🌝',
+    '🌽',
+    '🍔',
+    '🍟',
+    '🍕',
+    '🍩',
+    '🍪',
+    '🧋',
+    '🍓',
+    '🥑',
+    '🌶️',
+    '🍄',
+    '🌊',
+    '🌈',
+    '⚡',
+    '❄️',
+    '🌪️',
+    '🌍',
+    '🚴',
+    '🏖️',
+    '🎡',
+    '🗼',
+    '🗽',
+    '🧧',
+    '🀄',
+    '🎲',
+    '🪙',
+    '💎',
+    '🔔',
+    '📌',
+    '🔑',
+    '⏰',
+    '🗓️',
+    '🧸',
+    '🎈',
+    '🛒',
+    '💡',
+  ],
 };
 
 class StickerPanel extends StatefulWidget {
@@ -46,19 +168,25 @@ class _StickerPanelState extends State<StickerPanel> {
   Future<void> _importZip() async {
     final session = context.read<Session>();
     try {
-      const group = XTypeGroup(label: '表情包', extensions: ['zip']);
+      const group = XTypeGroup(
+        label: '表情包',
+        extensions: ['zip'],
+        uniformTypeIdentifiers: ['public.zip-archive'],
+      );
       final file = await openFile(acceptedTypeGroups: [group]);
       if (file == null) return;
       final bytes = await file.readAsBytes();
       final store = StickerStore(session.prefs);
-      final name = await store.importZip(bytes);      await _loadPacks();
+      final name = await store.importZip(bytes);
+      await _loadPacks();
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('已导入表情包「$name」')));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('导入失败：$e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('导入失败：$e')));
       }
     }
   }
@@ -75,7 +203,8 @@ class _StickerPanelState extends State<StickerPanel> {
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('发送失败：$e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('发送失败：$e')));
       }
     }
   }
@@ -125,12 +254,16 @@ class _StickerPanelState extends State<StickerPanel> {
     final all = _emojiGroups.values.expand((e) => e).toList();
     return GridView.builder(
       padding: const EdgeInsets.all(8),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 8),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 8,
+      ),
       itemCount: all.length,
       itemBuilder: (context, i) => InkWell(
         borderRadius: BorderRadius.circular(8),
         onTap: () => context.read<Session>().sendText(widget.convId, all[i]),
-        child: Center(child: Text(all[i], style: const TextStyle(fontSize: 26))),
+        child: Center(
+          child: Text(all[i], style: const TextStyle(fontSize: 26)),
+        ),
       ),
     );
   }
@@ -146,7 +279,10 @@ class _StickerPanelState extends State<StickerPanel> {
           children: [
             const Text('还没有贴纸包'),
             const SizedBox(height: 8),
-            FilledButton.tonal(onPressed: _importZip, child: const Text('导入 zip 表情包')),
+            FilledButton.tonal(
+              onPressed: _importZip,
+              child: const Text('导入 zip 表情包'),
+            ),
           ],
         ),
       );
@@ -156,7 +292,10 @@ class _StickerPanelState extends State<StickerPanel> {
         for (final pack in _packs) ...[
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-            child: Text(pack.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+            child: Text(
+              pack.name,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
           ),
           GridView.count(
             crossAxisCount: 5,
@@ -170,9 +309,12 @@ class _StickerPanelState extends State<StickerPanel> {
                   onTap: () => _sendSticker(pack, s),
                   child: Padding(
                     padding: const EdgeInsets.all(6),
-                    child: Image.file(pack.fileOf(s), fit: BoxFit.contain,
-                        errorBuilder: (_, _, _) =>
-                            const Icon(Icons.broken_image_outlined)),
+                    child: Image.file(
+                      pack.fileOf(s),
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, _, _) =>
+                          const Icon(Icons.broken_image_outlined),
+                    ),
                   ),
                 ),
             ],

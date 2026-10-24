@@ -25,7 +25,12 @@ class StickerPack {
   final String name;
   final String dir; // 包目录绝对路径
   final List<Sticker> stickers;
-  const StickerPack({required this.id, required this.name, required this.dir, required this.stickers});
+  const StickerPack({
+    required this.id,
+    required this.name,
+    required this.dir,
+    required this.stickers,
+  });
 
   File fileOf(Sticker s) => File('$dir/${s.file}');
 }
@@ -66,12 +71,14 @@ class StickerStore {
           .map((e) => Sticker(id: e['id'] as String, file: e['file'] as String))
           .toList();
       if (stickers.isEmpty) continue;
-      out.add(StickerPack(
-        id: meta['id'] as String,
-        name: meta['name'] as String? ?? '未命名',
-        dir: meta['dir'] as String? ?? root,
-        stickers: stickers,
-      ));
+      out.add(
+        StickerPack(
+          id: meta['id'] as String,
+          name: meta['name'] as String? ?? '未命名',
+          dir: meta['dir'] as String? ?? root,
+          stickers: stickers,
+        ),
+      );
     }
     return out;
   }
@@ -85,7 +92,9 @@ class StickerStore {
       if (f.isFile) {
         final name = f.name.split(Platform.isWindows ? r'\' : '/').last;
         if (name == 'manifest.json') {
-          manifest = jsonDecode(utf8.decode(f.content as List<int>)) as Map<String, dynamic>;
+          manifest = jsonDecode(
+            utf8.decode(f.content as List<int>),
+          ) as Map<String, dynamic>;
         } else {
           files[name] = f.content as List<int>;
         }
@@ -105,7 +114,9 @@ class StickerStore {
     }
 
     final packId = 'p${DateTime.now().millisecondsSinceEpoch}';
-    final dir = Directory('${await _rootDir()}${Platform.pathSeparator}$packId');
+    final dir = Directory(
+      '${await _rootDir()}${Platform.pathSeparator}$packId',
+    );
     dir.createSync(recursive: true);
     for (final s in stickers) {
       await File('${dir.path}${Platform.pathSeparator}${s['file']}')

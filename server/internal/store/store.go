@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS users (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   name         TEXT NOT NULL UNIQUE,
   display_name TEXT NOT NULL,
+  avatar_media_id TEXT NOT NULL DEFAULT '',
   password_hash TEXT NOT NULL,
   created_at   INTEGER NOT NULL
 );
@@ -96,20 +97,33 @@ CREATE TABLE IF NOT EXISTS media (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conv_id, seq);
+CREATE TABLE IF NOT EXISTS automation_threads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  identity_name TEXT NOT NULL,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+  title TEXT NOT NULL DEFAULT '',
+  selected_model TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_automation_threads_user ON automation_threads(identity_name, user_id, created_at);
 `
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("建表: %w", err)
 	}
-	return nil
+	// Upgrade databases created before avatar support.
+	_, _ = s.db.Exec(`ALTER TABLE users ADD COLUMN avatar_media_id TEXT NOT NULL DEFAULT ''`)
+	return s.migrateAPIMode()
 }
 
 // ---------- 类型 ----------
 
 type User struct {
-	ID           int64  `json:"id"`
-	Name         string `json:"name"`
-	DisplayName  string `json:"display_name"`
-	PasswordHash string `json:"-"` // 不随 JSON 序列化
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	DisplayName   string `json:"display_name"`
+	AvatarMediaID string `json:"avatar_media_id,omitempty"`
+	PasswordHash  string `json:"-"` // 不随 JSON 序列化
 }
 
 type Device struct {
@@ -121,14 +135,18 @@ type Device struct {
 }
 
 type Message struct {
-	ID         string          `json:"id"`
-	ConvID     int64           `json:"conv_id"`
-	Seq        int64           `json:"seq"`
-	SenderID   int64           `json:"sender_id"`
-	SenderName string          `json:"sender_name"`
-	Type       string          `json:"type"`
-	Payload    json.RawMessage `json:"payload"`
-	CreatedAt  int64           `json:"created_at"`
+	Revision            int64           `json:"revision"`
+	ID                  string          `json:"id"`
+	ConvID              int64           `json:"conv_id"`
+	Seq                 int64           `json:"seq"`
+	SenderID            int64           `json:"sender_id"`
+	SenderName          string          `json:"sender_name"`
+	SenderAvatarMediaID string          `json:"sender_avatar_media_id,omitempty"`
+	Type                string          `json:"type"`
+	Format              string          `json:"format,omitempty"`
+	FormatVersion       int             `json:"format_version,omitempty"`
+	Payload             json.RawMessage `json:"payload"`
+	CreatedAt           int64           `json:"created_at"`
 }
 
 type ConvSummary struct {
@@ -138,6 +156,18 @@ type ConvSummary struct {
 	LastMessage *Message `json:"last_message"`
 	Unread      int64    `json:"unread"`
 	LastSeq     int64    `json:"last_seq"`
+}
+
+type AutomationThread struct {
+	SystemPrompt   *string `json:"system_prompt"`
+	TitleManual    bool    `json:"title_manual"`
+	ID             int64   `json:"id"`
+	Identity       string  `json:"identity"`
+	UserID         int64   `json:"user_id"`
+	ConversationID int64   `json:"conversation_id"`
+	Title          string  `json:"title"`
+	SelectedModel  string  `json:"selected_model"`
+	CreatedAt      int64   `json:"created_at"`
 }
 
 type Media struct {
@@ -166,10 +196,38 @@ func (s *Store) CreateUser(name, displayName, passwordHash string) (User, error)
 	return User{ID: id, Name: name, DisplayName: displayName}, nil
 }
 
+// EnsureAutomationUser creates the non-login service identity used by an
+// automation profile. An empty password hash makes interactive login impossible.
+func (s *Store) EnsureAutomationUser(name, displayName string) (User, error) {
+	u, err := s.UserByName(name)
+	if err != nil {
+		return User{}, err
+	}
+	if u != nil {
+		if displayName != "" && u.DisplayName != displayName {
+			if _, err := s.db.Exec(`UPDATE users SET display_name=? WHERE id=?`, displayName, u.ID); err != nil {
+				return User{}, err
+			}
+			u.DisplayName = displayName
+		}
+		return *u, nil
+	}
+	now := time.Now().Unix()
+	res, err := s.db.Exec(`INSERT INTO users(name, display_name, password_hash, created_at) VALUES(?,?,?,?)`, name, displayName, "!automation-disabled!", now)
+	if err != nil {
+		return User{}, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return User{}, err
+	}
+	return User{ID: id, Name: name, DisplayName: displayName}, nil
+}
+
 func (s *Store) UserByName(name string) (*User, error) {
 	u := &User{}
-	err := s.db.QueryRow(`SELECT id, name, display_name, password_hash FROM users WHERE name=?`, name).
-		Scan(&u.ID, &u.Name, &u.DisplayName, &u.PasswordHash)
+	err := s.db.QueryRow(`SELECT id, name, display_name, password_hash, avatar_media_id FROM users WHERE name=?`, name).
+		Scan(&u.ID, &u.Name, &u.DisplayName, &u.PasswordHash, &u.AvatarMediaID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -181,8 +239,8 @@ func (s *Store) UserByName(name string) (*User, error) {
 
 func (s *Store) UserByID(id int64) (*User, error) {
 	u := &User{}
-	err := s.db.QueryRow(`SELECT id, name, display_name FROM users WHERE id=?`, id).
-		Scan(&u.ID, &u.Name, &u.DisplayName)
+	err := s.db.QueryRow(`SELECT id, name, display_name, avatar_media_id FROM users WHERE id=? AND password_hash <> '!deleted!'`, id).
+		Scan(&u.ID, &u.Name, &u.DisplayName, &u.AvatarMediaID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -190,7 +248,7 @@ func (s *Store) UserByID(id int64) (*User, error) {
 }
 
 func (s *Store) ListUsers() ([]User, error) {
-	rows, err := s.db.Query(`SELECT id, name, display_name FROM users ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, name, display_name, avatar_media_id FROM users WHERE password_hash <> '!deleted!' ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -198,12 +256,40 @@ func (s *Store) ListUsers() ([]User, error) {
 	var out []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Name, &u.DisplayName); err != nil {
+		if err := rows.Scan(&u.ID, &u.Name, &u.DisplayName, &u.AvatarMediaID); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) SetUserAvatar(userID int64, mediaID string) error {
+	_, err := s.db.Exec(`UPDATE users SET avatar_media_id=? WHERE id=?`, mediaID, userID)
+	return err
+}
+
+// DeleteUser revokes an account while preserving messages, attachments and
+// foreign keys used by the remaining conversation members.
+func (s *Store) DeleteUser(userID int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var exists int
+	if err := tx.QueryRow("SELECT 1 FROM users WHERE id=?", userID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	for _, query := range []string{"DELETE FROM devices WHERE user_id=?", "UPDATE users SET password_hash='!deleted!' WHERE id=?"} {
+		if _, err := tx.Exec(query, userID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // ---------- 设备与令牌 ----------
@@ -298,9 +384,127 @@ func (s *Store) GetOrCreateDM(a, b int64) (int64, error) {
 	return id, tx.Commit()
 }
 
+// CreatePrivateConversation creates an additional two-member conversation.
+// It intentionally leaves dm_key NULL so a user can maintain multiple
+// independent automation threads with the same identity.
+func (s *Store) CreatePrivateConversation(a, b int64) (int64, error) {
+	now := time.Now().Unix()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`INSERT INTO conversations(type, dm_key, created_at) VALUES('dm',NULL,?)`, now)
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	for _, uid := range []int64{a, b} {
+		if _, err := tx.Exec(`INSERT INTO conv_members(conv_id,user_id,joined_at) VALUES(?,?,?)`, id, uid, now); err != nil {
+			return 0, err
+		}
+	}
+	return id, tx.Commit()
+}
+
+func (s *Store) AddConversationMember(convID, userID int64) error {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO conv_members(conv_id, user_id, joined_at) VALUES(?,?,?)`, convID, userID, time.Now().Unix())
+	return err
+}
+
+func (s *Store) CreateAutomationThread(identity string, userID, conversationID int64, title, model string) (AutomationThread, error) {
+	now := time.Now().Unix()
+	res, err := s.db.Exec(`INSERT INTO automation_threads(identity_name,user_id,conversation_id,title,selected_model,created_at) VALUES(?,?,?,?,?,?)`, identity, userID, conversationID, title, model, now)
+	if err != nil {
+		return AutomationThread{}, err
+	}
+	id, err := res.LastInsertId()
+	return AutomationThread{ID: id, Identity: identity, UserID: userID, ConversationID: conversationID, Title: title, SelectedModel: model, CreatedAt: now}, err
+}
+
+func (s *Store) AutomationThreads(identity string, userID int64) ([]AutomationThread, error) {
+	rows, err := s.db.Query(`SELECT id,identity_name,user_id,conversation_id,title,selected_model,created_at FROM automation_threads WHERE identity_name=? AND user_id=? ORDER BY created_at DESC,id DESC`, identity, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AutomationThread{}
+	for rows.Next() {
+		var item AutomationThread
+		if err := rows.Scan(&item.ID, &item.Identity, &item.UserID, &item.ConversationID, &item.Title, &item.SelectedModel, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) AutomationThreadForUser(identity string, userID, conversationID int64) (*AutomationThread, error) {
+	var item AutomationThread
+	err := s.db.QueryRow(`SELECT id,identity_name,user_id,conversation_id,title,selected_model,created_at FROM automation_threads WHERE identity_name=? AND user_id=? AND conversation_id=?`, identity, userID, conversationID).Scan(&item.ID, &item.Identity, &item.UserID, &item.ConversationID, &item.Title, &item.SelectedModel, &item.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return &item, err
+}
+
+func (s *Store) UpdateAutomationThread(identity string, userID, conversationID int64, title, model string) error {
+	_, err := s.db.Exec(`UPDATE automation_threads SET title=?, selected_model=? WHERE identity_name=? AND user_id=? AND conversation_id=?`, title, model, identity, userID, conversationID)
+	return err
+}
+
+// DeleteAutomationThread permanently removes an owned private automation conversation.
+// Media rows/files are retained because an upload can be referenced elsewhere.
+func (s *Store) DeleteAutomationThread(identity string, userID, conversationID int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var threadID int64
+	err = tx.QueryRow(`SELECT id FROM automation_threads WHERE identity_name=? AND user_id=? AND conversation_id=?`, identity, userID, conversationID).Scan(&threadID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM message_changes WHERE conv_id=?`, conversationID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM messages WHERE conv_id=?`, conversationID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM conv_members WHERE conv_id=?`, conversationID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM automation_threads WHERE id=?`, threadID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM conversations WHERE id=?`, conversationID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) IsMember(convID, userID int64) (bool, error) {
 	var one int
 	err := s.db.QueryRow(`SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=?`, convID, userID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// CanChat excludes revoked members while retaining historical memberships.
+func (s *Store) CanChat(convID, userID int64) (bool, error) {
+	var one int
+	err := s.db.QueryRow(`SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=?
+		AND NOT EXISTS (SELECT 1 FROM conv_members m JOIN users u ON u.id=m.user_id
+			WHERE m.conv_id=? AND u.password_hash='!deleted!')`, convID, userID, convID).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -326,7 +530,7 @@ func (s *Store) ConvMemberIDs(convID int64) ([]int64, error) {
 
 func (s *Store) ConvMembers(convID int64) ([]User, error) {
 	rows, err := s.db.Query(`
-		SELECT u.id, u.name, u.display_name
+		SELECT u.id, u.name, u.display_name, u.avatar_media_id
 		FROM conv_members m JOIN users u ON u.id = m.user_id
 		WHERE m.conv_id=? ORDER BY u.id`, convID)
 	if err != nil {
@@ -336,7 +540,7 @@ func (s *Store) ConvMembers(convID int64) ([]User, error) {
 	var out []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Name, &u.DisplayName); err != nil {
+		if err := rows.Scan(&u.ID, &u.Name, &u.DisplayName, &u.AvatarMediaID); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -350,6 +554,9 @@ func (s *Store) ListConversations(userID int64) ([]ConvSummary, error) {
 		SELECT c.id, c.type, COALESCE(m.last_read_seq,0)
 		FROM conversations c
 		JOIN conv_members m ON m.conv_id = c.id AND m.user_id = ?
+		WHERE NOT EXISTS (SELECT 1 FROM conv_members revoked
+			JOIN users u ON u.id=revoked.user_id
+			WHERE revoked.conv_id=c.id AND u.password_hash='!deleted!')
 		ORDER BY c.id`, userID)
 	if err != nil {
 		return nil, err
@@ -402,7 +609,7 @@ func (s *Store) ListConversations(userID int64) ([]ConvSummary, error) {
 
 func (s *Store) lastMessage(convID int64) (*Message, error) {
 	m, err := s.messageRow(`
-		SELECT m.id, m.conv_id, m.seq, m.sender_id, u.display_name, m.type, m.payload, m.created_at
+		SELECT m.id, m.conv_id, m.seq, m.sender_id, u.display_name, u.avatar_media_id, m.type, m.payload, m.created_at, m.revision
 		FROM messages m JOIN users u ON u.id = m.sender_id
 		WHERE m.conv_id=? ORDER BY m.seq DESC LIMIT 1`, convID)
 	if err != nil {
@@ -430,14 +637,15 @@ func (s *Store) InsertMessage(convID, senderID int64, typ string, payload []byte
 		m := &Message{}
 		var payload string
 		err = tx.QueryRow(`
-			SELECT m.id, m.conv_id, m.seq, m.sender_id, u.display_name, m.type, m.payload, m.created_at
+			SELECT m.id, m.conv_id, m.seq, m.sender_id, u.display_name, u.avatar_media_id, m.type, m.payload, m.created_at, m.revision
 			FROM messages m JOIN users u ON u.id = m.sender_id
 			WHERE m.sender_id=? AND m.client_msg_id=?`, senderID, clientMsgID).
-			Scan(&m.ID, &m.ConvID, &m.Seq, &m.SenderID, &m.SenderName, &m.Type, &payload, &m.CreatedAt)
+			Scan(&m.ID, &m.ConvID, &m.Seq, &m.SenderID, &m.SenderName, &m.SenderAvatarMediaID, &m.Type, &payload, &m.CreatedAt, &m.Revision)
 		if err != nil {
 			return Message{}, err
 		}
 		m.Payload = json.RawMessage(payload)
+		m.Format, m.FormatVersion = payloadFormat(m.Payload)
 		return *m, tx.Commit()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -460,7 +668,7 @@ func (s *Store) InsertMessage(convID, senderID int64, typ string, payload []byte
 	}
 	return Message{
 		ID: id, ConvID: convID, Seq: maxSeq + 1, SenderID: senderID,
-		Type: typ, Payload: json.RawMessage(payload), CreatedAt: now,
+		Type: typ, Format: func() string { f, _ := payloadFormat(json.RawMessage(payload)); return f }(), FormatVersion: func() int { _, v := payloadFormat(json.RawMessage(payload)); return v }(), Payload: json.RawMessage(payload), CreatedAt: now,
 	}, nil
 }
 
@@ -468,7 +676,7 @@ func (s *Store) messageRow(query string, args ...any) (*Message, error) {
 	m := &Message{}
 	var payload string
 	err := s.db.QueryRow(query, args...).
-		Scan(&m.ID, &m.ConvID, &m.Seq, &m.SenderID, &m.SenderName, &m.Type, &payload, &m.CreatedAt)
+		Scan(&m.ID, &m.ConvID, &m.Seq, &m.SenderID, &m.SenderName, &m.SenderAvatarMediaID, &m.Type, &payload, &m.CreatedAt, &m.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -476,13 +684,31 @@ func (s *Store) messageRow(query string, args ...any) (*Message, error) {
 		return nil, err
 	}
 	m.Payload = json.RawMessage(payload)
+	m.Format, m.FormatVersion = payloadFormat(m.Payload)
 	return m, nil
+}
+
+func payloadFormat(payload json.RawMessage) (string, int) {
+	var v struct {
+		Format        string `json:"format"`
+		FormatVersion int    `json:"format_version"`
+	}
+	if json.Unmarshal(payload, &v) != nil {
+		return "plain", 1
+	}
+	if v.Format == "" {
+		v.Format = "plain"
+	}
+	if v.FormatVersion == 0 {
+		v.FormatVersion = 1
+	}
+	return v.Format, v.FormatVersion
 }
 
 // MessagesAfter 增量拉取：seq > afterSeq，按 seq 升序；返回 has_more 表示是否还有剩余。
 func (s *Store) MessagesAfter(convID, afterSeq int64, limit int) ([]Message, bool, error) {
 	rows, err := s.db.Query(`
-		SELECT m.id, m.conv_id, m.seq, m.sender_id, u.display_name, m.type, m.payload, m.created_at
+		SELECT m.id, m.conv_id, m.seq, m.sender_id, u.display_name, u.avatar_media_id, m.type, m.payload, m.created_at, m.revision
 		FROM messages m JOIN users u ON u.id = m.sender_id
 		WHERE m.conv_id=? AND m.seq>? ORDER BY m.seq ASC LIMIT ?`, convID, afterSeq, limit+1)
 	if err != nil {
@@ -493,10 +719,11 @@ func (s *Store) MessagesAfter(convID, afterSeq int64, limit int) ([]Message, boo
 	for rows.Next() {
 		var payload string
 		m := Message{}
-		if err := rows.Scan(&m.ID, &m.ConvID, &m.Seq, &m.SenderID, &m.SenderName, &m.Type, &payload, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.ConvID, &m.Seq, &m.SenderID, &m.SenderName, &m.SenderAvatarMediaID, &m.Type, &payload, &m.CreatedAt, &m.Revision); err != nil {
 			return nil, false, err
 		}
 		m.Payload = json.RawMessage(payload)
+		m.Format, m.FormatVersion = payloadFormat(m.Payload)
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -507,6 +734,41 @@ func (s *Store) MessagesAfter(convID, afterSeq int64, limit int) ([]Message, boo
 		out = out[:limit]
 	}
 	return out, hasMore, nil
+}
+
+// MessagesRecent returns the newest messages in chronological order. It is
+// used for model context so long conversations do not keep sending their
+// oldest messages forever.
+func (s *Store) MessagesRecent(convID int64, limit int) ([]Message, error) {
+	if limit <= 0 {
+		limit = 30
+	}
+	rows, err := s.db.Query(`
+		SELECT m.id, m.conv_id, m.seq, m.sender_id, u.display_name, u.avatar_media_id, m.type, m.payload, m.created_at, m.revision
+		FROM messages m JOIN users u ON u.id = m.sender_id
+		WHERE m.conv_id=? ORDER BY m.seq DESC LIMIT ?`, convID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Message
+	for rows.Next() {
+		var payload string
+		m := Message{}
+		if err := rows.Scan(&m.ID, &m.ConvID, &m.Seq, &m.SenderID, &m.SenderName, &m.SenderAvatarMediaID, &m.Type, &payload, &m.CreatedAt, &m.Revision); err != nil {
+			return nil, err
+		}
+		m.Payload = json.RawMessage(payload)
+		m.Format, m.FormatVersion = payloadFormat(m.Payload)
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
 }
 
 // MarkRead 推进已读游标（只前进不后退）。

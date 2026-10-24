@@ -13,7 +13,9 @@ void main() {
   testWidgets('未登录时显示登录页', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final session = Session(SharedPrefs(await SharedPreferences.getInstance()));
-    final theme = ThemeController(SharedPrefs(await SharedPreferences.getInstance()));
+    final theme = ThemeController(
+      SharedPrefs(await SharedPreferences.getInstance()),
+    );
     await tester.pumpWidget(
       MultiProvider(
         providers: [

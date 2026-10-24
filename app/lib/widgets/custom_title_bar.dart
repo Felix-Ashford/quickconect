@@ -35,7 +35,10 @@ class QcTitleBar extends StatelessWidget {
                   alignment: Alignment.centerLeft,
                   child: Text(
                     'QuickConect',
-                    style: TextStyle(fontSize: 12, color: fg.withValues(alpha: 0.85)),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: fg.withValues(alpha: 0.85),
+                    ),
                   ),
                 ),
               ),
@@ -86,7 +89,9 @@ class _WinButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
-      hoverColor: hoverRed ? Colors.red.withValues(alpha: 0.9) : fg.withValues(alpha: 0.12),
+      hoverColor: hoverRed
+          ? Colors.red.withValues(alpha: 0.9)
+          : fg.withValues(alpha: 0.12),
       child: SizedBox(
         width: 44,
         height: 34,

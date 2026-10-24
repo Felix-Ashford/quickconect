@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -40,16 +41,90 @@ func main() {
 		serve(args)
 	case "adduser":
 		adduser(args)
+	case "listusers":
+		listusers(args)
+	case "deleteuser":
+		deleteuser(args)
 	case "version":
 		fmt.Println("quickconect-server", version)
+	case "setautomationavatar":
+		setAutomationAvatar(args)
 	default:
 		usage()
 		os.Exit(2)
 	}
 }
 
+func deleteuser(args []string) {
+	fs := flag.NewFlagSet("deleteuser", flag.ExitOnError)
+	cfgPath := fs.String("config", "/etc/quickconect/config.yaml", "配置文件路径")
+	name := fs.String("name", "", "用户名")
+	confirm := fs.Bool("confirm", false, "确认删除")
+	_ = fs.Parse(args)
+	if *name == "" || !*confirm {
+		fmt.Fprintln(os.Stderr, "删除用户需要提供 -name 和 -confirm")
+		os.Exit(2)
+	}
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "加载配置失败:", err)
+		os.Exit(1)
+	}
+	for _, identity := range cfg.Automation.Identities {
+		if identity.Name == *name {
+			fmt.Fprintln(os.Stderr, "不能删除自动化身份，请先从 automation.yaml 移除该身份")
+			os.Exit(1)
+		}
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "打开数据库失败:", err)
+		os.Exit(1)
+	}
+	defer st.Close()
+	u, err := st.UserByName(*name)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "查询用户失败:", err)
+		os.Exit(1)
+	}
+	if u == nil {
+		fmt.Fprintln(os.Stderr, "用户不存在:", *name)
+		os.Exit(1)
+	}
+	if err := st.DeleteUser(u.ID); err != nil {
+		fmt.Fprintln(os.Stderr, "删除用户失败:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("已删除用户 id=%d name=%s\n", u.ID, u.Name)
+}
+
+func listusers(args []string) {
+	fs := flag.NewFlagSet("listusers", flag.ExitOnError)
+	cfgPath := fs.String("config", "/etc/quickconect/config.yaml", "配置文件路径")
+	_ = fs.Parse(args)
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "load config failed:", err)
+		os.Exit(1)
+	}
+	st, err := store.Open(cfg.DBPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "open database failed:", err)
+		os.Exit(1)
+	}
+	defer st.Close()
+	users, err := st.ListUsers()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "list users failed:", err)
+		os.Exit(1)
+	}
+	for _, u := range users {
+		fmt.Printf("%d\t%s\t%s\n", u.ID, u.Name, u.DisplayName)
+	}
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "用法: quickconect <serve|adduser|version> [参数]")
+	fmt.Fprintln(os.Stderr, "用法: quickconect <serve|adduser|listusers|deleteuser|version> [参数]")
 }
 
 func logger() *slog.Logger {
@@ -77,6 +152,24 @@ func serve(args []string) {
 		os.Exit(1)
 	}
 	defer st.Close()
+	for i := range cfg.Automation.Identities {
+		identity := &cfg.Automation.Identities[i]
+		if !identity.Enabled || identity.Name == "" {
+			continue
+		}
+		if identity.DisplayName == "" {
+			identity.DisplayName = identity.Name
+		}
+		u, err := st.EnsureAutomationUser(identity.Name, identity.DisplayName)
+		if err != nil {
+			log.Error("automation identity initialization failed", "name", identity.Name, "err", err)
+			os.Exit(1)
+		}
+		if err := st.SetUserAvatar(u.ID, identity.AvatarMediaID); err != nil {
+			log.Error("automation avatar failed", "err", err)
+			os.Exit(1)
+		}
+	}
 
 	hub := ws.NewHub(log)
 	pusher := push.New(st, hub, push.NtfyOptions{
@@ -119,8 +212,17 @@ func adduser(args []string) {
 	name := fs.String("name", "", "用户名（登录用，小写字母数字）")
 	display := fs.String("display", "", "昵称（聊天中显示）")
 	password := fs.String("password", "", "密码")
+	passwordFile := fs.String("password-file", "", "从临时文件读取密码")
 	_ = fs.Parse(args)
 
+	if *password == "" && *passwordFile != "" {
+		b, err := os.ReadFile(*passwordFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "读取密码文件失败:", err)
+			os.Exit(1)
+		}
+		*password = strings.TrimSpace(string(b))
+	}
 	if *name == "" || *password == "" {
 		fmt.Fprintln(os.Stderr, "必须提供 -name 和 -password")
 		os.Exit(2)

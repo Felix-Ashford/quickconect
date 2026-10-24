@@ -53,18 +53,17 @@ class _LoginPageState extends State<LoginPage> {
     });
     try {
       final isSecure =
-          !_server.text.trim().startsWith('http://') && _server.text.trim().isNotEmpty;
+          !_server.text.trim().startsWith('http://') &&
+          _server.text.trim().isNotEmpty;
       final fpRaw = _fingerprint.text.trim();
       if (isSecure) {
         final fp = PinningStore.normalizeFingerprint(fpRaw);
         if (fpRaw.isEmpty) {
-          setState(() => _error =
-              'HTTPS 服务器需要填写证书指纹（向管理员索取，64 位十六进制）');
+          setState(() => _error = 'HTTPS 服务器需要填写证书指纹（向管理员索取，64 位十六进制）');
           return;
         }
         if (fp == null) {
-          setState(() => _error =
-              '证书指纹格式不对：应为 64 位十六进制（可带冒号或空格，大小写不限）');
+          setState(() => _error = '证书指纹格式不对：应为 64 位十六进制（可带冒号或空格，大小写不限）');
           return;
         }
         await PinningStore.trust(session.prefs, fp);
@@ -166,10 +165,13 @@ class _LoginPageState extends State<LoginPage> {
                 ],
                 FilledButton(
                   onPressed: _busy ? null : _submit,
-                  style: FilledButton.styleFrom(padding: const EdgeInsets.all(16)),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.all(16),
+                  ),
                   child: _busy
                       ? const SizedBox(
-                          height: 20, width: 20,
+                          height: 20,
+                          width: 20,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Text('登录'),
