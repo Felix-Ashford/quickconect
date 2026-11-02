@@ -4,10 +4,36 @@ import 'package:quickconect_manager/main.dart';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 void main() {
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
+
+  testWidgets(
+    'Manager requests Simplified Chinese and uses Windows Chinese fonts',
+    (tester) async {
+      final previousPlatform = debugDefaultTargetPlatformOverride;
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      try {
+        await tester.pumpWidget(const ManagerApp());
+        final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
+        expect(app.locale, const Locale('zh', 'CN'));
+        expect(app.supportedLocales, contains(const Locale('zh', 'CN')));
+        expect(
+          app.theme!.textTheme.bodyMedium!.fontFamily,
+          'Microsoft YaHei UI',
+        );
+        expect(
+          app.theme!.textTheme.bodyMedium!.fontFamilyFallback,
+          contains('Microsoft YaHei'),
+        );
+      } finally {
+        debugDefaultTargetPlatformOverride = previousPlatform;
+      }
+    },
+  );
+
   testWidgets('manager starts without a profile', (tester) async {
     await tester.pumpWidget(const ManagerApp());
     expect(find.text('QuickConect Manager'), findsOneWidget);

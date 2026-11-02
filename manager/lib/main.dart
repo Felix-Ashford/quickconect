@@ -6,7 +6,9 @@ import 'dart:math';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter/services.dart';
 import 'package:yaml/yaml.dart';
@@ -1049,9 +1051,20 @@ class ManagerApp extends StatelessWidget {
   Widget build(BuildContext c) => MaterialApp(
     debugShowCheckedModeBanner: false,
     title: 'QuickConect Manager',
+    locale: const Locale('zh', 'CN'),
+    supportedLocales: const [Locale('zh', 'CN')],
+    localizationsDelegates: GlobalMaterialLocalizations.delegates,
     theme: ThemeData(
       useMaterial3: true,
       colorSchemeSeed: const Color(0xff147d72),
+      // Explicitly use Windows' Simplified Chinese system fonts instead of
+      // allowing CJK fallback to select Japanese glyph variants.
+      fontFamily: defaultTargetPlatform == TargetPlatform.windows
+          ? 'Microsoft YaHei UI'
+          : null,
+      fontFamilyFallback: defaultTargetPlatform == TargetPlatform.windows
+          ? const ['Microsoft YaHei', 'Segoe UI', 'Segoe UI Emoji']
+          : null,
     ),
     home: const ManagerHome(),
   );
