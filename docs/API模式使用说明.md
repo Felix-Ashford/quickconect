@@ -84,4 +84,8 @@ iOS 更新需在 macOS/Xcode 或对应构建环境生成并安装新版应用，
 
 本轮未连接真实付费模型做验收、未部署 VPS、未进行 iOS 真机验证。实际模型服务的权限、可用模型和上下文窗口仍需使用目标配置验证。
 
-当前 Windows 服务端、Linux amd64 和 Linux ARM64 服务端均已重新编译；Windows 客户端和 Manager Release 压缩包已更新。现有 iOS IPA 未包含本轮改动，需要另行在 macOS 构建。
+当前 Windows 服务端、Linux amd64 和 Linux ARM64 服务端均已重新编译；Windows 客户端和 Manager Release 压缩包已更新。
+
+iOS 已在 macOS GitHub Actions 成功构建，本次源代码提交为 `8749bca`，构建记录为 [Build iOS IPA #41473483880](https://github.com/Felix-Ashford/quickconect/actions/runs/41473483880)。产物为未签名 IPA，需要使用现有签名安装方式导入手机；这表示编译和打包通过，尚不代表完成 iOS 真机验收。
+
+Windows 客户端优先使用系统自带的 Microsoft YaHei UI / Microsoft YaHei 显示简体中文，并指定 `zh_CN` 区域，减少 CJK 字体回退选中日文字形的情况。代码和公式继续使用其专用字体。
