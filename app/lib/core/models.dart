@@ -150,6 +150,7 @@ class AutomationIdentity {
 class AutomationThread {
   final int id, userId, conversationId;
   final String identity, title, selectedModel;
+  final List<String> selectedModels;
   final int createdAt;
   final String? systemPrompt;
   final bool titleManual;
@@ -161,6 +162,7 @@ class AutomationThread {
     required this.title,
     required this.selectedModel,
     required this.createdAt,
+    this.selectedModels = const [],
     this.systemPrompt,
     this.titleManual = false,
   });
@@ -171,10 +173,18 @@ class AutomationThread {
     conversationId: (j['conversation_id'] as num).toInt(),
     title: j['title'] as String? ?? '',
     selectedModel: j['selected_model'] as String? ?? '',
+    selectedModels: (j['selected_models'] as List? ?? const [])
+        .whereType<String>()
+        .where((model) => model.trim().isNotEmpty)
+        .toList(),
     createdAt: (j['created_at'] as num?)?.toInt() ?? 0,
     systemPrompt: j['system_prompt'] as String?,
     titleManual: j['title_manual'] as bool? ?? false,
   );
+
+  List<String> get modelOrder => selectedModels.isNotEmpty
+      ? selectedModels
+      : (selectedModel.trim().isEmpty ? const [] : [selectedModel.trim()]);
 }
 
 class Message {
@@ -262,6 +272,7 @@ class Message {
 
   bool get isPending => seq < 0;
   bool get isRetracted => payload['retracted'] == true;
+  bool get isDeleted => payload['deleted'] == true;
   bool get isEdited => payload['edited_at'] != null;
 
   Map<String, dynamic> toJson() => {

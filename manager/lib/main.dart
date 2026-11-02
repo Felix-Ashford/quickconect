@@ -146,6 +146,7 @@ class AutomationProfile {
         name: j['name'] as String? ?? '',
         displayName: j['display_name'] as String? ?? '',
         avatarMediaId: j['avatar_media_id'] as String? ?? '',
+        avatarPath: j['avatar_path'] as String? ?? '',
         contextMaxChars: (j['context_max_chars'] as num?)?.toInt() ?? 60000,
         mentionSystemPrompt:
             j['mention_system_prompt'] as String? ?? defaultMentionPrompt,
@@ -245,16 +246,13 @@ class ManagerController extends ChangeNotifier {
   }
 
   Future<void> saveAutomationProfiles() async {
-    for (final profile in automationProfiles) {
-      if (profile.avatarPath.isNotEmpty) {
-        if (!connectedToSelected) throw StateError('头像上传需要先连接目标 VPS');
-        profile.avatarMediaId = await uploadAutomationAvatar(profile);
-        profile.avatarPath = '';
-      }
-    }
     await store.write(
       key: 'automation-profiles',
-      value: jsonEncode(automationProfiles.map((p) => p.toJson()).toList()),
+      value: jsonEncode(
+        automationProfiles
+            .map((p) => {...p.toJson(), 'avatar_path': p.avatarPath})
+            .toList(),
+      ),
     );
     automationConfig = const JsonEncoder.withIndent('  ').convert({
       'identities': automationProfiles.map((p) => p.toJson()).toList(),
@@ -271,35 +269,76 @@ class ManagerController extends ChangeNotifier {
         'avatar-${DateTime.now().microsecondsSinceEpoch}-${Random.secure().nextInt(1 << 30)}';
     final temp = '/tmp/quickconect-$id';
     final sftp = await ssh.sftp();
-    final file = await sftp.open(
-      temp,
-      mode:
-          SftpFileOpenMode.create |
-          SftpFileOpenMode.write |
-          SftpFileOpenMode.truncate,
-    );
     try {
-      await file.write(Stream.value(bytes));
-    } finally {
-      await file.close();
-    }
-    final mime = profile.avatarPath.toLowerCase().endsWith('.png')
-        ? 'image/png'
-        : profile.avatarPath.toLowerCase().endsWith('.webp')
-        ? 'image/webp'
-        : 'image/jpeg';
-    final result = await ssh.runWithResult(
-      'sudo -n /opt/quickconect/quickconect-server setautomationavatar -config /etc/quickconect/config.yaml -name ${_quote(profile.name)} -file ${_quote(temp)} -media-id ${_quote(id)} -mime ${_quote(mime)}',
-    );
-    await ssh.runWithResult('rm -f ${_quote(temp)}');
-    if (result.exitCode != 0)
-      throw StateError(
-        '头像上传失败：${utf8.decode(result.stderr, allowMalformed: true)}',
+      final file = await sftp.open(
+        temp,
+        mode:
+            SftpFileOpenMode.create |
+            SftpFileOpenMode.write |
+            SftpFileOpenMode.truncate,
       );
+      try {
+        await file.write(Stream.value(bytes));
+      } finally {
+        await file.close();
+      }
+      final mime = profile.avatarPath.toLowerCase().endsWith('.png')
+          ? 'image/png'
+          : profile.avatarPath.toLowerCase().endsWith('.webp')
+          ? 'image/webp'
+          : 'image/jpeg';
+      // 用服务账号导入，避免 root 创建数据库 WAL/媒体后服务进程无法读取。
+      final result = await ssh.runWithResult(
+        'chmod 644 ${_quote(temp)} && sudo -n -u quickconect /opt/quickconect/quickconect-server setautomationavatar -config /etc/quickconect/config.yaml -name ${_quote(profile.name)} -file ${_quote(temp)} -media-id ${_quote(id)} -mime ${_quote(mime)}',
+      );
+      if (result.exitCode != 0 ||
+          utf8.decode(result.stdout, allowMalformed: true).trim() != id) {
+        throw StateError(
+          '头像上传失败，请先部署新版服务端：${utf8.decode(result.stderr, allowMalformed: true)} ${utf8.decode(result.stdout, allowMalformed: true)}',
+        );
+      }
+    } finally {
+      try {
+        await ssh.runWithResult('rm -f ${_quote(temp)}');
+      } finally {
+        sftp.close();
+      }
+    }
     return id;
   }
 
   Future<void> writeAutomationConfig(String value) async {
+    if (busy) return;
+    if (!connectedToSelected) {
+      output = '请先连接目标 VPS，再保存配置和上传头像';
+      notifyListeners();
+      return;
+    }
+    busy = true;
+    notifyListeners();
+    try {
+      final parsed = Map<String, dynamic>.from(
+        jsonDecode(jsonEncode(loadYaml(value))) as Map,
+      );
+      final identities = parsed['identities'] as List? ?? [];
+      for (final entry in identities) {
+        final profile = automationProfiles
+            .where((p) => p.name == entry['name'])
+            .firstOrNull;
+        if (profile == null || profile.avatarPath.isEmpty) continue;
+        profile.avatarMediaId = await uploadAutomationAvatar(profile);
+        profile.avatarPath = '';
+        entry['avatar_media_id'] = profile.avatarMediaId;
+      }
+      await saveAutomationProfiles();
+      value = const JsonEncoder.withIndent('  ').convert(parsed);
+    } catch (e) {
+      output = '保存配置或上传头像失败：$e';
+      busy = false;
+      notifyListeners();
+      return;
+    }
+    busy = false;
     await saveAutomationConfig(value);
     final encoded = base64.encode(utf8.encode(value));
     await run(
@@ -1146,7 +1185,7 @@ class _ManagerHomeState extends State<ManagerHome> {
               ButtonSegment(value: 1, label: Text('Config')),
               ButtonSegment(value: 2, label: Text('Operations')),
               ButtonSegment(value: 3, label: Text('Deploy')),
-              ButtonSegment(value: 4, label: Text('Automation')),
+              ButtonSegment(value: 4, label: Text('AI 与自动化身份')),
             ],
             selected: {tab},
             onSelectionChanged: (v) => setState(() => tab = v.first),
@@ -1159,21 +1198,17 @@ class _ManagerHomeState extends State<ManagerHome> {
   }
 
   Widget _automationPage() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return ListView(
       children: [
-        Text(
-          'Automation identities',
-          style: Theme.of(context).textTheme.titleLarge,
-        ),
+        Text('AI 与自动化身份', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 6),
-        const Text(
-          'Configure AI, briefings, alerts and external senders. The service stores original text and uses the same message renderer as human users.',
-        ),
+        const Text('每个身份卡片下方可修改头像、名称和系统提示词。保存到本机后，再点击“上传并应用到 VPS”生效。'),
         const SizedBox(height: 12),
-        Row(
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
           children: [
-            Expanded(child: Text('身份数量：${ctl.automationProfiles.length}')),
+            Text('身份数量：${ctl.automationProfiles.length}'),
             OutlinedButton.icon(
               onPressed: () => _editAutomation(),
               icon: const Icon(Icons.add),
@@ -1184,14 +1219,20 @@ class _ManagerHomeState extends State<ManagerHome> {
                   ? null
                   : () => ctl.saveAutomationConfig(automationEditor.text),
               icon: const Icon(Icons.save_outlined),
-              label: const Text('Save local'),
+              label: const Text('保存到本机'),
             ),
             FilledButton.icon(
               onPressed: ctl.busy
                   ? null
-                  : () => ctl.writeAutomationConfig(automationEditor.text),
+                  : () async {
+                      await ctl.writeAutomationConfig(automationEditor.text);
+                      if (!mounted) return;
+                      automationEditor.text = ctl.automationConfig;
+                      ScaffoldMessenger.of(context)
+                          .showSnackBar(SnackBar(content: Text(ctl.output)));
+                    },
               icon: const Icon(Icons.cloud_upload_outlined),
-              label: const Text('Save to VPS'),
+              label: const Text('上传并应用到 VPS'),
             ),
             OutlinedButton.icon(
               onPressed: ctl.busy ? null : ctl.installCliProxyApi,
@@ -1209,45 +1250,62 @@ class _ManagerHomeState extends State<ManagerHome> {
         if (ctl.automationProfiles.isNotEmpty) ...[
           for (final profile in ctl.automationProfiles)
             Card(
-              child: ListTile(
-                leading: Icon(
-                  profile.mode == AutomationMode.api
-                      ? Icons.api
-                      : profile.mode == AutomationMode.agent
-                      ? Icons.psychology
-                      : Icons.campaign,
-                ),
-                title: Text(
-                  profile.displayName.isEmpty
-                      ? profile.name
-                      : profile.displayName,
-                ),
-                subtitle: Text(
-                  '${profile.mode.name} · ${profile.enabled ? '启用' : '停用'} · 允许用户：${profile.allowedUsers.isEmpty ? '全部' : profile.allowedUsers}',
-                ),
-                trailing: Wrap(
-                  spacing: 4,
-                  children: [
-                    if (profile.mode != AutomationMode.push)
-                      IconButton(
-                        tooltip: 'Test API',
-                        icon: const Icon(Icons.network_check_outlined),
-                        onPressed: ctl.busy
-                            ? null
-                            : () => ctl.testAutomationApi(profile),
-                      ),
-                    IconButton(
-                      tooltip: 'Edit',
-                      icon: const Icon(Icons.edit_outlined),
-                      onPressed: () => _editAutomation(existing: profile),
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: Icon(
+                      profile.mode == AutomationMode.api
+                          ? Icons.api
+                          : profile.mode == AutomationMode.agent
+                          ? Icons.psychology
+                          : Icons.campaign,
                     ),
-                  ],
-                ),
+                    title: Text(
+                      profile.displayName.isEmpty
+                          ? profile.name
+                          : profile.displayName,
+                    ),
+                    subtitle: Text(
+                      '${profile.mode.name} · ${profile.enabled ? '启用' : '停用'} · 允许用户：${profile.allowedUsers.isEmpty ? '全部' : profile.allowedUsers}',
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                    child: Wrap(
+                      spacing: 4,
+                      children: [
+                        if (profile.mode != AutomationMode.push)
+                          IconButton(
+                            tooltip: 'Test API',
+                            icon: const Icon(Icons.network_check_outlined),
+                            onPressed: ctl.busy
+                                ? null
+                                : () => ctl.testAutomationApi(profile),
+                          ),
+                        if (profile.mode == AutomationMode.api)
+                          TextButton.icon(
+                            onPressed: () => _editAutomation(
+                              existing: profile,
+                              openPrompts: true,
+                            ),
+                            icon: const Icon(Icons.edit_note),
+                            label: const Text('编辑系统提示词'),
+                          ),
+                        OutlinedButton.icon(
+                          icon: const Icon(Icons.edit_outlined),
+                          onPressed: () => _editAutomation(existing: profile),
+                          label: const Text('编辑头像、名称与配置'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
             ),
         ],
         const SizedBox(height: 8),
-        Expanded(
+        SizedBox(
+          height: 280,
           child: TextField(
             controller: automationEditor,
             expands: true,
@@ -1263,7 +1321,10 @@ class _ManagerHomeState extends State<ManagerHome> {
     );
   }
 
-  Future<void> _editAutomation({AutomationProfile? existing}) async {
+  Future<void> _editAutomation({
+    AutomationProfile? existing,
+    bool openPrompts = false,
+  }) async {
     await ctl.loadCliProxyApiKey();
     if (!mounted) return;
     final profile = await showDialog<AutomationProfile>(
@@ -1272,6 +1333,7 @@ class _ManagerHomeState extends State<ManagerHome> {
         profile: existing,
         vps: ctl.selected,
         cliProxyApiKey: ctl.cliProxyApiKey,
+        openPrompts: openPrompts,
       ),
     );
     if (profile == null || !mounted) return;
@@ -1281,10 +1343,30 @@ class _ManagerHomeState extends State<ManagerHome> {
       final index = ctl.automationProfiles.indexOf(existing);
       ctl.automationProfiles[index] = profile;
     }
-    await ctl.saveAutomationProfiles();
+    try {
+      await ctl.saveAutomationProfiles();
+    } catch (error) {
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('本机保存失败：$error')));
+      return;
+    }
     if (!mounted) return;
     automationEditor.text = ctl.automationConfig;
     setState(() {});
+    if (profile.avatarPath.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('头像已选好。请连接目标 VPS，点击“上传并应用到 VPS”完成上传。')),
+      );
+    } else if (openPrompts) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            '默认提示词已保存到本机。点击“上传并应用到 VPS”写入服务器并生效；已覆盖提示词的独立对话保留自身设置。',
+          ),
+        ),
+      );
+    }
   }
 
   Widget _overview(VpsProfile p) => ListView(
@@ -1911,20 +1993,27 @@ class AutomationDialog extends StatefulWidget {
     this.profile,
     this.vps,
     this.cliProxyApiKey = '',
+    this.openPrompts = false,
   });
   final AutomationProfile? profile;
   final VpsProfile? vps;
   final String cliProxyApiKey;
+  final bool openPrompts;
 
   @override
   State<AutomationDialog> createState() => _AutomationDialogState();
 }
 
 class _AutomationDialogState extends State<AutomationDialog> {
+  final _formScroll = ScrollController();
+  final _promptsKey = GlobalKey();
   late final profile =
       (widget.profile == null
           ? null
-          : AutomationProfile.fromJson(widget.profile!.toJson())) ??
+          : AutomationProfile.fromJson({
+              ...widget.profile!.toJson(),
+              'avatar_path': widget.profile!.avatarPath,
+            })) ??
       AutomationProfile(id: DateTime.now().millisecondsSinceEpoch.toString());
   late final name = TextEditingController(text: profile.name);
   late final display = TextEditingController(text: profile.displayName);
@@ -1955,6 +2044,23 @@ class _AutomationDialogState extends State<AutomationDialog> {
   late bool enabled = profile.enabled;
 
   @override
+  void initState() {
+    super.initState();
+    if (widget.openPrompts) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final target = _promptsKey.currentContext;
+        if (target != null && _formScroll.hasClients) {
+          Scrollable.ensureVisible(
+            target,
+            duration: const Duration(milliseconds: 220),
+            alignment: 0.12,
+          );
+        }
+      });
+    }
+  }
+
+  @override
   void dispose() {
     for (final controller in [
       name,
@@ -1974,6 +2080,7 @@ class _AutomationDialogState extends State<AutomationDialog> {
     ]) {
       controller.dispose();
     }
+    _formScroll.dispose();
     super.dispose();
   }
 
@@ -1997,6 +2104,7 @@ class _AutomationDialogState extends State<AutomationDialog> {
     content: SizedBox(
       width: 600,
       child: SingleChildScrollView(
+        controller: _formScroll,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -2034,8 +2142,16 @@ class _AutomationDialogState extends State<AutomationDialog> {
                         ),
                       ],
                     );
-                    if (image != null && mounted)
+                    if (image != null && mounted) {
+                      if (await image.length() > 5 * 1024 * 1024) {
+                        if (context.mounted)
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('头像文件不能超过 5 MB')),
+                          );
+                        return;
+                      }
                       setState(() => profile.avatarPath = image.path);
+                    }
                   },
                 ),
                 TextButton(
@@ -2049,6 +2165,8 @@ class _AutomationDialogState extends State<AutomationDialog> {
             ),
             if (profile.avatarMediaId.isNotEmpty && profile.avatarPath.isEmpty)
               const Text('已保存服务器头像；选择新图片可替换。'),
+            if (profile.avatarPath.isNotEmpty)
+              const Text('保存后点击“上传并应用到 VPS”上传头像；需要先连接目标 VPS。'),
             DropdownButtonFormField<AutomationMode>(
               initialValue: mode,
               decoration: const InputDecoration(labelText: '工作模式'),
@@ -2093,8 +2211,17 @@ class _AutomationDialogState extends State<AutomationDialog> {
               field(fallbacks, '模型回退顺序（逗号分隔）'),
               field(cliUrl, 'CLI Proxy API 管理链接（可选）'),
               const Divider(height: 24),
+              Container(
+                key: _promptsKey,
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'API 模式默认提示词',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
               field(chars, '上下文字符预算', hint: '默认 60000，包含发送者与时间'),
               TextField(
+                key: const ValueKey('mention-system-prompt'),
                 controller: mentionPrompt,
                 minLines: 3,
                 maxLines: 8,

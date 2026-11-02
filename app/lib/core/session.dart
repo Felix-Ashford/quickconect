@@ -58,6 +58,9 @@ class Session extends ChangeNotifier {
       {}; // cmid → 原始 payload（重试用）
   final Set<int> _deletedAutomationConversations = {};
 
+  bool automationConversationDeleted(int conversationId) =>
+      _deletedAutomationConversations.contains(conversationId);
+
   MediaStore get mediaStore {
     if (_mediaStore == null || _mediaStoreFor != api) {
       _mediaStoreFor = api;
@@ -368,7 +371,27 @@ class Session extends ChangeNotifier {
     return convId;
   }
 
-  /// An automation contact opens the most recent isolated thread for this user.
+  String? _automationThreadKey(String identity) {
+    final client = api;
+    final user = me;
+    if (client == null || user == null) return null;
+    return 'automation_last_thread:${Uri.encodeComponent(client.base)}:${user.id}:${Uri.encodeComponent(identity)}';
+  }
+
+  Future<void> rememberAutomationThread(
+    String identity,
+    int conversationId,
+  ) async {
+    final key = _automationThreadKey(identity);
+    if (key != null) await prefs.setString(key, '$conversationId');
+  }
+
+  int? lastAutomationThreadId(String identity) {
+    final key = _automationThreadKey(identity);
+    return key == null ? null : int.tryParse(prefs.getString(key) ?? '');
+  }
+
+  /// An automation contact opens the last selected isolated thread for this user.
   Future<int> openAutomation(AutomationIdentity identity) async {
     final client = api!;
     final generation = _syncGeneration;
@@ -376,9 +399,14 @@ class Session extends ChangeNotifier {
     if (api != client || generation != _syncGeneration) {
       throw StateError('账号已经切换，请重新选择联系人');
     }
-    final thread = threads.isEmpty
-        ? await client.createAutomationThread(identity.id)
-        : threads.first;
+    final remembered = lastAutomationThreadId(identity.id);
+    final thread =
+        threads
+            .where((item) => item.conversationId == remembered)
+            .firstOrNull ??
+        (threads.isEmpty
+            ? await client.createAutomationThread(identity.id)
+            : threads.first);
     if (api != client || generation != _syncGeneration) {
       throw StateError('账号已经切换，请重新选择联系人');
     }
@@ -386,6 +414,7 @@ class Session extends ChangeNotifier {
     if (api != client || generation != _syncGeneration) {
       throw StateError('账号已经切换，请重新选择联系人');
     }
+    await rememberAutomationThread(identity.id, thread.conversationId);
     return thread.conversationId;
   }
 
@@ -404,6 +433,10 @@ class Session extends ChangeNotifier {
     if (client == null) return;
     await client.deleteAutomationThread(identity.id, conversationId);
     if (api != client || _syncGeneration != generation) return;
+    if (lastAutomationThreadId(identity.id) == conversationId) {
+      final key = _automationThreadKey(identity.id);
+      if (key != null) await prefs.remove(key);
+    }
     _removeAutomationConversation(conversationId);
     await _persistQueue;
   }
@@ -766,6 +799,13 @@ class Session extends ChangeNotifier {
     }
     _applyIncoming(reply);
     return reply;
+  }
+
+  Future<void> deleteExcludedMessage(String identity, Message message) async {
+    final client = api!;
+    final generation = _syncGeneration;
+    final deleted = await client.deleteExcludedMessage(identity, message);
+    if (api == client && generation == _syncGeneration) _applyRevision(deleted);
   }
 
   Future<void> sendText(

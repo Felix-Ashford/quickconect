@@ -22,6 +22,29 @@ Message revised(int revision, {bool retracted = false}) => Message(
 );
 
 void main() {
+  test(
+    'deleted AI reply stays deleted after stale sync and local serialization',
+    () {
+      final session = Session(MemoryPrefs());
+      addTearDown(session.dispose);
+      session.msgs[7] = [revised(0)];
+      final tombstone = revised(5).toJson()..['payload'] = {'deleted': true};
+      session.handleEvent({'type': 'message.updated', 'message': tombstone});
+      session.handleEvent({
+        'type': 'message.new',
+        'message': revised(0).toJson(),
+      });
+      session.handleEvent({
+        'type': 'message.updated',
+        'message': revised(2).toJson(),
+      });
+      final restored = Message.fromJson(session.msgs[7]!.single.toJson());
+      expect(restored.isDeleted, isTrue);
+      expect(restored.text, isEmpty);
+      expect(restored.revision, 5);
+    },
+  );
+
   test('message revisions survive local JSON serialization', () {
     final restored = Message.fromJson(revised(12).toJson());
     expect(restored.revision, 12);

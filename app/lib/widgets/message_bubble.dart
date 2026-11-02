@@ -25,6 +25,9 @@ class MessageBubble extends StatelessWidget {
   final VoidCallback? onEdit;
   final VoidCallback? onRetract;
   final VoidCallback? onRegenerate;
+  final VoidCallback? onDelete;
+  final String? contextNotice;
+  final bool excludedFromAIContext;
 
   const MessageBubble({
     super.key,
@@ -35,6 +38,9 @@ class MessageBubble extends StatelessWidget {
     this.onEdit,
     this.onRetract,
     this.onRegenerate,
+    this.onDelete,
+    this.contextNotice,
+    this.excludedFromAIContext = false,
   });
 
   @override
@@ -45,13 +51,20 @@ class MessageBubble extends StatelessWidget {
     final m = message;
 
     // 表情贴纸：不带气泡背景
-    if (m.type == 'sticker' && !m.isRetracted && onRetract == null) {
+    if (m.type == 'sticker' &&
+        !m.isRetracted &&
+        onRetract == null &&
+        onDelete == null &&
+        contextNotice == null &&
+        !excludedFromAIContext) {
       return _StickerContent(key: ValueKey(m.id), session: session, m: m);
     }
 
     final failed = m.status == MsgStatus.failed;
     final bg = failed
         ? cs.errorContainer
+        : excludedFromAIContext
+        ? qc.excludedAiBubble
         : isAutomation
         ? qc.aiBubble
         : isMine
@@ -59,6 +72,8 @@ class MessageBubble extends StatelessWidget {
         : qc.otherBubble;
     final fg = failed
         ? cs.onErrorContainer
+        : excludedFromAIContext
+        ? qc.excludedAiBubbleText
         : isAutomation
         ? qc.aiBubbleText
         : isMine
@@ -118,6 +133,15 @@ class MessageBubble extends StatelessWidget {
               ),
             ),
           content,
+          if (contextNotice != null && !excludedFromAIContext)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                contextNotice!,
+                key: ValueKey('context-notice-${m.id}'),
+                style: TextStyle(fontSize: 11, color: fg.withValues(alpha: .7)),
+              ),
+            ),
           const SizedBox(height: 2),
           Row(
             mainAxisSize: MainAxisSize.min,
@@ -139,7 +163,10 @@ class MessageBubble extends StatelessWidget {
                   ),
                 ),
               ],
-              if (onEdit != null || onRetract != null || onRegenerate != null)
+              if (onEdit != null ||
+                  onRetract != null ||
+                  onRegenerate != null ||
+                  onDelete != null)
                 SizedBox(
                   width: 28,
                   height: 24,
@@ -155,6 +182,8 @@ class MessageBubble extends StatelessWidget {
                           onRetract?.call();
                         case 'regenerate':
                           onRegenerate?.call();
+                        case 'delete':
+                          onDelete?.call();
                       }
                     },
                     itemBuilder: (_) => [
@@ -169,6 +198,11 @@ class MessageBubble extends StatelessWidget {
                         const PopupMenuItem(
                           value: 'regenerate',
                           child: Text('重新生成回复'),
+                        ),
+                      if (onDelete != null)
+                        const PopupMenuItem(
+                          value: 'delete',
+                          child: Text('删除上下文外消息'),
                         ),
                     ],
                   ),

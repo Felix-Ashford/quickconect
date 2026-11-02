@@ -150,11 +150,7 @@ func (a *Server) regenerateMessage(w http.ResponseWriter, r *http.Request) {
 		fail(w, 403, "private conversations are disabled")
 		return
 	}
-	selectedModel := ""
-	if thread != nil {
-		selectedModel = thread.SelectedModel
-	}
-	models := a.apiModelCandidates(r.Context(), identity, selectedModel)
+	models := a.apiModelCandidatesForThread(r.Context(), identity, thread)
 	if len(models) == 0 {
 		fail(w, 400, "no model available")
 		return
@@ -170,7 +166,7 @@ func (a *Server) regenerateMessage(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "identity unavailable")
 		return
 	}
-	payload, _ := json.Marshal(map[string]any{"text": answer, "format": "markdown", "format_version": 1, "model": model, "reply_to": question.ID})
+	payload, _ := json.Marshal(map[string]any{"text": answer, "format": "markdown", "format_version": 1, "model": model, "reply_to": question.ID, "question_revision": question.Revision})
 	m, err := a.store.InsertMessage(req.ConversationID, user.ID, "text", payload, req.ClientMsgID)
 	if err != nil {
 		fail(w, 500, "cannot save reply")
@@ -214,6 +210,30 @@ func (a *Server) apiModelCandidates(ctx context.Context, identity *config.Automa
 	}
 	return models
 }
+
+func (a *Server) apiModelCandidatesForThread(ctx context.Context, identity *config.AutomationIdentity, thread *store.AutomationThread) []string {
+	if thread != nil && len(thread.SelectedModels) > 0 {
+		return uniqueModels(thread.SelectedModels)
+	}
+	selected := ""
+	if thread != nil {
+		selected = thread.SelectedModel
+	}
+	return a.apiModelCandidates(ctx, identity, selected)
+}
+
+func uniqueModels(models []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(models))
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model != "" && !seen[model] {
+			seen[model] = true
+			out = append(out, model)
+		}
+	}
+	return out
+}
 func truncateTail(text string, budget int) string {
 	runes := []rune(text)
 	if budget <= 0 {
@@ -231,10 +251,6 @@ func (a *Server) apiContext(identity *config.AutomationIdentity, conv, sender in
 }
 
 func (a *Server) apiContextThrough(identity *config.AutomationIdentity, conv, sender int64, prompt string, throughSeq int64) ([]map[string]string, error) {
-	budget := identity.ContextMaxChars
-	if budget <= 0 {
-		budget = 60000
-	}
 	thread, err := a.store.AutomationThreadForUser(identity.Name, sender, conv)
 	if err != nil {
 		return nil, err
@@ -260,58 +276,11 @@ func (a *Server) apiContextThrough(identity *config.AutomationIdentity, conv, se
 	if system != "" {
 		messages = append(messages, map[string]string{"role": "system", "content": system})
 	}
-	history, err := a.store.ContextHistoryThrough(conv, budget, throughSeq)
+	entries, _, err := a.contextPlan(identity, conv, sender, prompt, throughSeq)
 	if err != nil {
 		return nil, err
 	}
-	user, _ := a.store.UserByName(identity.Name)
-	entries := []map[string]string{}
-	latestMatches := false
-	for i, m := range history {
-		var p map[string]any
-		_ = json.Unmarshal(m.Payload, &p)
-		body, _ := p["text"].(string)
-		if body == "" {
-			body = fmt.Sprintf("[%s] %v", m.Type, p["name"])
-		}
-		role := "user"
-		if user != nil && m.SenderID == user.ID {
-			role = "assistant"
-		}
-		content := fmt.Sprintf("[发送者: %s; 用户ID: %d; 时间: %s]\n%s", m.SenderName, m.SenderID, time.Unix(m.CreatedAt, 0).UTC().Format(time.RFC3339), body)
-		entries = append(entries, map[string]string{"role": role, "content": content})
-		if i == len(history)-1 && role == "user" && m.SenderID == sender && body == prompt {
-			latestMatches = true
-		}
-	}
-	if !latestMatches {
-		senderUser, _ := a.store.UserByID(sender)
-		name := fmt.Sprint(sender)
-		if senderUser != nil {
-			name = senderUser.DisplayName
-		}
-		entries = append(entries, map[string]string{"role": "user", "content": fmt.Sprintf("[当前提问者: %s; 用户ID: %d; 时间: %s]\n%s", name, sender, time.Now().UTC().Format(time.RFC3339), prompt)})
-	}
-	kept := []map[string]string{}
-	remaining := budget
-	for i := len(entries) - 1; i >= 0 && remaining > 0; i-- {
-		entry := entries[i]
-		n := len([]rune(entry["content"]))
-		if n > remaining {
-			header, body, found := strings.Cut(entry["content"], "\n")
-			headerSize := len([]rune(header)) + 1
-			if !found || remaining <= headerSize {
-				break
-			}
-			entry["content"] = header + "\n" + truncateTail(body, remaining-headerSize)
-			n = remaining
-		}
-		kept = append(kept, entry)
-		remaining -= n
-	}
-	for i := len(kept) - 1; i >= 0; i-- {
-		messages = append(messages, kept[i])
-	}
+	messages = append(messages, entries...)
 	return messages, nil
 }
 

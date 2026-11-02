@@ -6,6 +6,8 @@ library;
 
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
+
 import 'package:flutter/material.dart';
 
 import 'prefs.dart';
@@ -24,6 +26,8 @@ class QcScheme {
   final Color otherBubbleText;
   final Color aiBubble;
   final Color aiBubbleText;
+  final Color excludedAiBubble;
+  final Color excludedAiBubbleText;
   final Color unreadBadge; // 未读角标
 
   const QcScheme({
@@ -38,9 +42,13 @@ class QcScheme {
     required this.otherBubbleText,
     Color? aiBubble,
     Color? aiBubbleText,
+    Color? excludedAiBubble,
+    Color? excludedAiBubbleText,
     required this.unreadBadge,
   }) : aiBubble = aiBubble ?? otherBubble,
-       aiBubbleText = aiBubbleText ?? otherBubbleText;
+       aiBubbleText = aiBubbleText ?? otherBubbleText,
+       excludedAiBubble = excludedAiBubble ?? const Color(0xFFFFE0B2),
+       excludedAiBubbleText = excludedAiBubbleText ?? const Color(0xFF4E342E);
 
   QcScheme copyWith({
     String? name,
@@ -54,6 +62,8 @@ class QcScheme {
     Color? otherBubbleText,
     Color? aiBubble,
     Color? aiBubbleText,
+    Color? excludedAiBubble,
+    Color? excludedAiBubbleText,
     Color? unreadBadge,
   }) => QcScheme(
     name: name ?? this.name,
@@ -67,6 +77,8 @@ class QcScheme {
     otherBubbleText: otherBubbleText ?? this.otherBubbleText,
     aiBubble: aiBubble ?? this.aiBubble,
     aiBubbleText: aiBubbleText ?? this.aiBubbleText,
+    excludedAiBubble: excludedAiBubble ?? this.excludedAiBubble,
+    excludedAiBubbleText: excludedAiBubbleText ?? this.excludedAiBubbleText,
     unreadBadge: unreadBadge ?? this.unreadBadge,
   );
 
@@ -82,6 +94,8 @@ class QcScheme {
     'otherBubbleText': otherBubbleText.toARGB32(),
     'aiBubble': aiBubble.toARGB32(),
     'aiBubbleText': aiBubbleText.toARGB32(),
+    'excludedAiBubble': excludedAiBubble.toARGB32(),
+    'excludedAiBubbleText': excludedAiBubbleText.toARGB32(),
     'unreadBadge': unreadBadge.toARGB32(),
   };
 
@@ -98,6 +112,12 @@ class QcScheme {
     aiBubble: j['aiBubble'] is int ? Color(j['aiBubble'] as int) : null,
     aiBubbleText: j['aiBubbleText'] is int
         ? Color(j['aiBubbleText'] as int)
+        : null,
+    excludedAiBubble: j['excludedAiBubble'] is int
+        ? Color(j['excludedAiBubble'] as int)
+        : null,
+    excludedAiBubbleText: j['excludedAiBubbleText'] is int
+        ? Color(j['excludedAiBubbleText'] as int)
         : null,
     unreadBadge: Color(j['unreadBadge'] as int),
   );
@@ -190,6 +210,8 @@ class QcColors extends ThemeExtension<QcColors> {
   final Color otherBubbleText;
   final Color aiBubble;
   final Color aiBubbleText;
+  final Color excludedAiBubble;
+  final Color excludedAiBubbleText;
   final Color chatBg;
   final Color unreadBadge;
 
@@ -200,6 +222,8 @@ class QcColors extends ThemeExtension<QcColors> {
     required this.otherBubbleText,
     required this.aiBubble,
     required this.aiBubbleText,
+    required this.excludedAiBubble,
+    required this.excludedAiBubbleText,
     required this.chatBg,
     required this.unreadBadge,
   });
@@ -211,6 +235,8 @@ class QcColors extends ThemeExtension<QcColors> {
     otherBubbleText: s.otherBubbleText,
     aiBubble: s.aiBubble,
     aiBubbleText: s.aiBubbleText,
+    excludedAiBubble: s.excludedAiBubble,
+    excludedAiBubbleText: s.excludedAiBubbleText,
     chatBg: s.chatBg,
     unreadBadge: s.unreadBadge,
   );
@@ -226,6 +252,8 @@ class QcColors extends ThemeExtension<QcColors> {
       otherBubbleText: c(otherBubbleText, other.otherBubbleText),
       aiBubble: c(aiBubble, other.aiBubble),
       aiBubbleText: c(aiBubbleText, other.aiBubbleText),
+      excludedAiBubble: c(excludedAiBubble, other.excludedAiBubble),
+      excludedAiBubbleText: c(excludedAiBubbleText, other.excludedAiBubbleText),
       chatBg: c(chatBg, other.chatBg),
       unreadBadge: c(unreadBadge, other.unreadBadge),
     );
@@ -239,6 +267,8 @@ class QcColors extends ThemeExtension<QcColors> {
     Color? otherBubbleText,
     Color? aiBubble,
     Color? aiBubbleText,
+    Color? excludedAiBubble,
+    Color? excludedAiBubbleText,
     Color? chatBg,
     Color? unreadBadge,
   }) => QcColors(
@@ -248,6 +278,8 @@ class QcColors extends ThemeExtension<QcColors> {
     otherBubbleText: otherBubbleText ?? this.otherBubbleText,
     aiBubble: aiBubble ?? this.aiBubble,
     aiBubbleText: aiBubbleText ?? this.aiBubbleText,
+    excludedAiBubble: excludedAiBubble ?? this.excludedAiBubble,
+    excludedAiBubbleText: excludedAiBubbleText ?? this.excludedAiBubbleText,
     chatBg: chatBg ?? this.chatBg,
     unreadBadge: unreadBadge ?? this.unreadBadge,
   );
@@ -266,6 +298,13 @@ ThemeData buildQcTheme(QcScheme s) {
     surfaceContainerHighest: s.otherBubble,
   );
   return ThemeData(
+    // Windows 中文优先使用系统内置简体字形，避免 CJK 回退选中日文字体。
+    fontFamily: defaultTargetPlatform == TargetPlatform.windows
+        ? 'Microsoft YaHei UI'
+        : null,
+    fontFamilyFallback: defaultTargetPlatform == TargetPlatform.windows
+        ? const ['Microsoft YaHei', 'Segoe UI', 'Segoe UI Emoji']
+        : null,
     colorScheme: colorScheme,
     useMaterial3: true,
     scaffoldBackgroundColor: s.scaffoldBg,

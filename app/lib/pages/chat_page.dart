@@ -68,6 +68,69 @@ class _ChatPageState extends State<ChatPage> {
   String? _threadTitleSignature;
   int _lastThreadUpdateVersion = -1;
   final Map<int, String> _drafts = {};
+  bool _leavingDeletedThread = false;
+  String? _contextSignature;
+  Map<String, dynamic> _contextStates = {};
+  String? _contextError;
+
+  Future<void> _loadContextVisibility(
+    AutomationIdentity identity,
+    String signature,
+  ) async {
+    final client = _session.api;
+    final conversationId = widget.convId;
+    if (client == null) return;
+    try {
+      final result = await client.automationContext(
+        identity.id,
+        conversationId,
+      );
+      if (!mounted ||
+          _session.api != client ||
+          widget.convId != conversationId ||
+          _contextSignature != signature) {
+        return;
+      }
+      setState(() {
+        _contextStates = Map<String, dynamic>.from(
+          result['messages'] as Map? ?? {},
+        );
+        _contextError = null;
+      });
+    } catch (_) {
+      if (mounted &&
+          _session.api == client &&
+          widget.convId == conversationId &&
+          _contextSignature == signature) {
+        setState(() => _contextError = '上下文状态暂不可用，请确认服务端已更新');
+      }
+    }
+  }
+
+  Future<void> _deleteExcludedMessage(Message message) async {
+    final identity = _currentIdentity;
+    if (identity == null || identity.mode != 'api') return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除上下文外消息？'),
+        content: const Text('此消息将从这个独立对话中移除，并同步到你的其他设备。删除后无法恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) {
+      await _session.deleteExcludedMessage(identity.id, message);
+    }
+  }
 
   @override
   void initState() {
@@ -117,6 +180,9 @@ class _ChatPageState extends State<ChatPage> {
               .where((thread) => thread.conversationId == conversationId)
               .firstOrNull;
         });
+        if (_automationThread != null) {
+          await _session.rememberAutomationThread(identity.id, conversationId);
+        }
       }
     } catch (_) {
       // Keep the last known thread settings when temporarily offline.
@@ -126,6 +192,7 @@ class _ChatPageState extends State<ChatPage> {
   String? get _activeAutomationModel {
     final messages = _session.msgs[widget.convId] ?? const <Message>[];
     for (final message in messages.reversed) {
+      if (message.isDeleted) continue;
       if (_automations.any((a) => a.userId == message.senderId)) {
         final model = message.payload['model'];
         if (model is String && model.trim().isNotEmpty) return model.trim();
@@ -192,7 +259,7 @@ class _ChatPageState extends State<ChatPage> {
     if (!mounted || _session.api != client || widget.convId != conversationId) {
       return;
     }
-    final selected = await showModalBottomSheet<AutomationThread>(
+    final selected = await showModalBottomSheet<AutomationDirectorySelection>(
       context: context,
       isScrollControlled: true,
       builder: (_) => AutomationThreadDirectory(
@@ -200,6 +267,22 @@ class _ChatPageState extends State<ChatPage> {
             ? identity.name
             : identity.displayName,
         threads: threads,
+        currentConversationId: conversationId,
+        deleteThread: (thread) async {
+          if (_session.api != client) throw StateError('账号已经切换');
+          await _session.deleteAutomationThread(
+            identity,
+            thread.conversationId,
+          );
+          if (_session.api != client) return null;
+          return threads
+              .where(
+                (item) =>
+                    item.conversationId != thread.conversationId &&
+                    _session.convs.containsKey(item.conversationId),
+              )
+              .firstOrNull;
+        },
         createThread: () async {
           if (_session.api != client) throw StateError('账号已经切换');
           return client.createAutomationThread(identity.id);
@@ -212,11 +295,24 @@ class _ChatPageState extends State<ChatPage> {
         widget.convId != conversationId) {
       return;
     }
+    if (selected.conversationId > 0) {
+      await _session.rememberAutomationThread(
+        identity.id,
+        selected.conversationId,
+      );
+    }
     await _session.refreshConversations();
     if (!mounted || _session.api != client || widget.convId != conversationId) {
       return;
     }
-    if (_session.convs.containsKey(selected.conversationId)) {
+    if (selected.conversationId < 0) {
+      final next = _session.sortedConvs().firstOrNull;
+      if (next != null) {
+        widget.onConversationChanged?.call(next.id);
+      } else {
+        widget.onConversationChanged?.call(-1);
+      }
+    } else if (_session.convs.containsKey(selected.conversationId)) {
       widget.onConversationChanged?.call(selected.conversationId);
     } else {
       await _session.openConversation(selected.conversationId);
@@ -232,6 +328,10 @@ class _ChatPageState extends State<ChatPage> {
       _input.text = _drafts[widget.convId] ?? '';
       _threadTitleSignature = null;
       _automationThread = null;
+      _leavingDeletedThread = false;
+      _contextSignature = null;
+      _contextStates = {};
+      _contextError = null;
       _lastMessageId = null;
       _hasRenderedMessages = false;
       _session.currentConvId = widget.convId;
@@ -549,6 +649,17 @@ class _ChatPageState extends State<ChatPage> {
   @override
   Widget build(BuildContext context) {
     final session = context.watch<Session>();
+    if (session.automationConversationDeleted(widget.convId) &&
+        !_uiActions.busy &&
+        !_leavingDeletedThread) {
+      _leavingDeletedThread = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        widget.onConversationChanged?.call(
+          session.sortedConvs().firstOrNull?.id ?? -1,
+        );
+      });
+    }
     final conv = session.convs[widget.convId];
     final meId = session.me?.id;
     final peer = (conv != null && meId != null) ? conv.peer(meId) : null;
@@ -558,7 +669,21 @@ class _ChatPageState extends State<ChatPage> {
               ? _automationThread!.title
               : '新对话')
         : (peer?.displayName ?? '会话 ${widget.convId}');
-    final msgs = session.msgs[widget.convId] ?? const [];
+    final allMessages = session.msgs[widget.convId] ?? const <Message>[];
+    final msgs = allMessages.where((message) => !message.isDeleted).toList();
+    if (isPrivateApiChat) {
+      final signature =
+          '${widget.convId}:${session.threadUpdateVersion}:${session.api.hashCode}:${allMessages.map((m) => '${m.id}:${m.revision}:${m.status.name}').join(',')}';
+      if (_contextSignature != signature) {
+        _contextSignature = signature;
+        _contextStates = {};
+        _contextError = null;
+        final identity = _currentIdentity!;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _loadContextVisibility(identity, signature);
+        });
+      }
+    }
     if (_currentIdentity?.mode == 'api' &&
         (_automationThread?.title.isEmpty == true ||
             _lastThreadUpdateVersion != session.threadUpdateVersion)) {
@@ -665,13 +790,44 @@ class _ChatPageState extends State<ChatPage> {
               onDeleted: () async {
                 await session.refreshConversations();
                 if (!mounted) return;
-                final next = session.sortedConvs().firstOrNull;
+                final threads =
+                    await session.api?.automationThreads(identity.id) ??
+                    const <AutomationThread>[];
+                final next = threads.isEmpty ? null : threads.first;
                 if (next != null) {
-                  widget.onConversationChanged?.call(next.id);
+                  await session.rememberAutomationThread(
+                    identity.id,
+                    next.conversationId,
+                  );
+                  await session.refreshConversations();
+                }
+                if (next != null) {
+                  widget.onConversationChanged?.call(next.conversationId);
+                } else {
+                  widget.onConversationChanged?.call(-1);
                 }
               },
               onConversationChanged: (id) =>
                   widget.onConversationChanged?.call(id),
+            ),
+          if (isPrivateApiChat)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      _contextError ?? '上下文外的消息使用单独的气泡颜色，可在外观设置中修改；新提问会占用字符预算。上下文外的 AI 回复可通过消息菜单删除。',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '刷新上下文状态',
+                    icon: const Icon(Icons.refresh, size: 18),
+                    onPressed: () => setState(() => _contextSignature = null),
+                  ),
+                ],
+              ),
             ),
           Expanded(
             child: msgs.isEmpty
@@ -682,10 +838,20 @@ class _ChatPageState extends State<ChatPage> {
                     itemCount: msgs.length,
                     itemBuilder: (context, i) {
                       final m = msgs[i];
+                      final state = _contextStates[m.id] as Map?;
+                      final excluded =
+                          state != null && state['included'] == false;
                       return MessageBubble(
                         // 消息级 key：避免 ListView 按下标复用控件导致的状态错位
                         key: ValueKey(m.id),
                         message: m,
+                        excludedFromAIContext: excluded,
+                        onDelete:
+                            isPrivateApiChat &&
+                                state?['can_delete'] == true &&
+                                !m.isPending
+                            ? () => _uiAction(() => _deleteExcludedMessage(m))
+                            : null,
                         isMine: meId != null && m.senderId == meId,
                         isAutomation: _automations.any(
                           (a) => a.userId == m.senderId,

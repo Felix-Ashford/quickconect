@@ -77,6 +77,8 @@ func New(s *store.Store, hub *ws.Hub, pusher *push.Coalescer, cfg *config.Config
 	mux.Handle("POST /api/automation/{id}/invoke", authed(http.HandlerFunc(a.invokeAutomation)))
 	mux.Handle("PUT /api/automation/{id}/threads/{conversationId}", authed(http.HandlerFunc(a.updateAutomationThread)))
 	mux.Handle("DELETE /api/automation/{id}/threads/{conversationId}", authed(http.HandlerFunc(a.deleteAutomationThread)))
+	mux.Handle("GET /api/automation/{id}/threads/{conversationId}/context", authed(http.HandlerFunc(a.automationContextVisibility)))
+	mux.Handle("DELETE /api/automation/{id}/threads/{conversationId}/messages/{messageId}", authed(http.HandlerFunc(a.deleteExcludedAutomationMessage)))
 	mux.Handle("PUT /api/conversations/{id}/messages/{messageId}", authed(http.HandlerFunc(a.editMessage)))
 	mux.Handle("DELETE /api/conversations/{id}/messages/{messageId}", authed(http.HandlerFunc(a.retractMessage)))
 	mux.Handle("GET /api/conversations/{id}/changes", authed(http.HandlerFunc(a.messageChanges)))
@@ -376,6 +378,23 @@ func (a *Server) updateAutomationThread(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		thread.SelectedModel = strings.TrimSpace(thread.SelectedModel)
+		if thread.SelectedModel == "" {
+			thread.SelectedModels = []string{}
+		} else {
+			thread.SelectedModels = []string{thread.SelectedModel}
+		}
+	}
+	if raw, ok := req["models"]; ok {
+		var models []string
+		if json.Unmarshal(raw, &models) != nil || len(models) > 64 {
+			fail(w, 400, "invalid models")
+			return
+		}
+		thread.SelectedModels = uniqueModels(models)
+		thread.SelectedModel = ""
+		if len(thread.SelectedModels) > 0 {
+			thread.SelectedModel = thread.SelectedModels[0]
+		}
 	}
 	if raw, ok := req["system_prompt"]; ok {
 		if json.Unmarshal(raw, &thread.SystemPrompt) != nil {
@@ -497,7 +516,7 @@ func (a *Server) invokeAutomation(w http.ResponseWriter, r *http.Request) {
 			fail(w, 403, "private conversations are disabled")
 			return
 		}
-		if strings.TrimSpace(req.Model) == "" {
+		if strings.TrimSpace(req.Model) == "" && len(thread.SelectedModels) == 0 {
 			req.Model = thread.SelectedModel
 		}
 	}
@@ -518,7 +537,11 @@ func (a *Server) invokeAutomation(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if identity.Mode == "api" {
-		models = a.apiModelCandidates(r.Context(), identity, req.Model)
+		if thread != nil && strings.TrimSpace(req.Model) == "" {
+			models = a.apiModelCandidatesForThread(r.Context(), identity, thread)
+		} else {
+			models = a.apiModelCandidates(r.Context(), identity, req.Model)
+		}
 	}
 	if len(models) == 0 && identity.Mode == "agent" {
 		models = append(models, "default")
@@ -533,7 +556,8 @@ func (a *Server) invokeAutomation(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadGateway, "all configured models failed")
 		return
 	}
-	payload, _ := json.Marshal(map[string]any{"text": answer, "format": "markdown", "format_version": 1, "model": usedModel})
+	// 此入口的 prompt 不一定持久化，不能把回复误关联到更早的用户消息。
+	payload, _ := json.Marshal(map[string]any{"text": answer, "format": "markdown", "format_version": 1, "model": usedModel, "context_standalone": true})
 	msg, err := a.store.InsertMessage(req.ConversationID, identityUser.ID, "text", payload, req.ClientMsgID)
 	if err != nil {
 		fail(w, http.StatusConflict, "message already exists or cannot be inserted")
@@ -1102,10 +1126,12 @@ func (a *Server) triggerMentionAutomations(convID, senderID int64, typ string, p
 			continue
 		}
 		selectedModel := ""
+		var selectedModels []string
 		if directThread {
 			selectedModel = thread.SelectedModel
+			selectedModels = thread.SelectedModels
 		}
-		go a.invokeMention(identity, convID, senderID, body.Text, selectedModel, questionSeq)
+		go a.invokeMention(identity, convID, senderID, body.Text, selectedModel, selectedModels, questionSeq)
 	}
 }
 
@@ -1143,7 +1169,7 @@ func mentionsIdentity(text string, names ...string) bool {
 	return false
 }
 
-func (a *Server) invokeMention(identity config.AutomationIdentity, convID, senderID int64, prompt, selectedModel string, questionSeq int64) {
+func (a *Server) invokeMention(identity config.AutomationIdentity, convID, senderID int64, prompt, selectedModel string, selectedModels []string, questionSeq int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 	models := make([]string, 0, 1+len(identity.ModelFallbacks))
@@ -1162,7 +1188,11 @@ func (a *Server) invokeMention(identity config.AutomationIdentity, convID, sende
 		models = append(models, "default")
 	}
 	if identity.Mode == "api" {
-		models = a.apiModelCandidates(ctx, &identity, selectedModel)
+		if len(selectedModels) > 0 {
+			models = uniqueModels(selectedModels)
+		} else {
+			models = a.apiModelCandidates(ctx, &identity, selectedModel)
+		}
 	}
 	if len(models) == 0 {
 		err := fmt.Errorf("no model configured or model discovery failed")
@@ -1176,6 +1206,7 @@ func (a *Server) invokeMention(identity config.AutomationIdentity, convID, sende
 		return
 	}
 	var answer, usedModel string
+	question, _ := a.store.MessageBySeq(convID, questionSeq)
 	if identity.Mode == "api" {
 		answer, usedModel, err = a.callAPIModelThrough(ctx, &identity, convID, senderID, prompt, models, questionSeq)
 	} else {
@@ -1186,7 +1217,12 @@ func (a *Server) invokeMention(identity config.AutomationIdentity, convID, sende
 		a.publishAutomationError(identity, convID, "无法调用自动化身份：模型服务暂时不可用，请检查 API 地址、密钥和模型配置。")
 		return
 	}
-	payload, _ := json.Marshal(map[string]any{"text": answer, "format": "markdown", "format_version": 1, "model": usedModel})
+	replyTo := ""
+	questionRevision := int64(0)
+	if question != nil {
+		replyTo, questionRevision = question.ID, question.Revision
+	}
+	payload, _ := json.Marshal(map[string]any{"text": answer, "format": "markdown", "format_version": 1, "model": usedModel, "reply_to": replyTo, "question_revision": questionRevision})
 	clientMsgID := fmt.Sprintf("mention-%d-%d-%d", convID, senderID, time.Now().UnixNano())
 	msg, err := a.store.InsertMessage(convID, identityUser.ID, "text", payload, clientMsgID)
 	if err != nil {

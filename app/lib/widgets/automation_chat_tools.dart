@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 
 import '../core/action_gate.dart';
 import '../core/models.dart';
+import '../core/model_presets.dart';
 import '../core/session.dart';
+import 'automation_thread_settings.dart';
 
 /// Controls for the current private API conversation. The thread owns its
 /// title, model and optional prompt override; other threads stay isolated.
@@ -67,6 +69,10 @@ class _AutomationChatToolsState extends State<AutomationChatTools> {
     if (session.api != client) return;
     await session.refreshConversations();
     if (context.mounted && session.api == client) {
+      await session.rememberAutomationThread(
+        identity.id,
+        created.conversationId,
+      );
       widget.onConversationChanged(created.conversationId);
     }
   });
@@ -114,95 +120,26 @@ class _AutomationChatToolsState extends State<AutomationChatTools> {
       }
     }
     if (!context.mounted || session.api != client) return;
-    var inherit = current.systemPrompt == null;
-    var customPrompt = current.systemPrompt ?? '';
-    var model = current.selectedModel;
-    final prompt = TextEditingController(
-      text: current.systemPrompt ?? identity.defaultSystemPrompt,
-    );
-    final models = {
-      '',
-      ...identity.models,
-      ...discoveredModels,
-      if (model.isNotEmpty) model,
-    }.toList();
-    final saved = await showDialog<bool>(
+    final saved = await showDialog<AutomationThreadSettings>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setState) => AlertDialog(
-          title: const Text('当前对话设置'),
-          content: SizedBox(
-            width: 560,
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  DropdownButtonFormField<String>(
-                    initialValue: model,
-                    decoration: const InputDecoration(labelText: '模型'),
-                    items: models
-                        .map(
-                          (item) => DropdownMenuItem(
-                            value: item,
-                            child: Text(item.isEmpty ? '自动选择（按服务端顺序尝试）' : item),
-                          ),
-                        )
-                        .toList(),
-                    onChanged: (value) => setState(() => model = value ?? ''),
-                  ),
-                  const SizedBox(height: 12),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('使用 Manager 中的默认提示词'),
-                    value: inherit,
-                    onChanged: (value) => setState(() {
-                      if (!inherit) customPrompt = prompt.text;
-                      inherit = value;
-                      prompt.text = value
-                          ? identity.defaultSystemPrompt
-                          : customPrompt;
-                    }),
-                  ),
-                  TextField(
-                    controller: prompt,
-                    enabled: !inherit,
-                    minLines: 4,
-                    maxLines: 10,
-                    decoration: const InputDecoration(
-                      labelText: '系统提示词',
-                      helperText: '关闭默认后可单独填写；留空表示此对话没有系统提示词。',
-                      helperMaxLines: 3,
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('保存'),
-            ),
-          ],
+      builder: (_) => AutomationThreadSettingsDialog(
+        thread: current,
+        defaultPrompt: identity.defaultSystemPrompt,
+        availableModels: [...identity.models, ...discoveredModels],
+        presetStore: ModelPresetStore(
+          session.prefs,
+          '${client.base}|${session.me?.id}|${identity.id}',
         ),
       ),
     );
-    final text = prompt.text;
-    prompt.dispose();
-    if (saved != true || !context.mounted || session.api != client) return;
+    if (saved == null || !context.mounted || session.api != client) return;
     await _run(context, () async {
       await client.updateAutomationThread(
         identity.id,
         current.conversationId,
-        model: model,
+        models: saved.models,
         updateSystemPrompt: true,
-        systemPrompt: inherit ? null : text,
+        systemPrompt: saved.systemPrompt,
       );
       if (context.mounted && session.api == client) await widget.onUpdated();
     });
@@ -210,11 +147,11 @@ class _AutomationChatToolsState extends State<AutomationChatTools> {
 
   @override
   Widget build(BuildContext context) {
-    final selectedModel = thread?.selectedModel.trim() ?? '';
-    final model = selectedModel.isNotEmpty
-        ? selectedModel
-        : (widget.activeModel?.trim().isNotEmpty == true
-              ? '自动选择 · ${widget.activeModel!.trim()}'
+    final activeModel = widget.activeModel?.trim() ?? '';
+    final model = activeModel.isNotEmpty
+        ? '上次使用 · $activeModel'
+        : (thread?.modelOrder.isNotEmpty == true
+              ? '优先 · ${thread!.modelOrder.first}'
               : '自动选择');
     return Material(
       color: Theme.of(context).colorScheme.surfaceContainerLow,

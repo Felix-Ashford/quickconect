@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"quickconect/internal/config"
@@ -41,6 +42,11 @@ func importAvatar(cfgPath, name, file, id, mime string) error {
 	if len(data) == 0 || len(data) > 5<<20 {
 		return fmt.Errorf("invalid avatar size")
 	}
+	// 根据内容识别，而不是信任本机文件扩展名。
+	mime = http.DetectContentType(data)
+	if mime != "image/png" && mime != "image/jpeg" && mime != "image/webp" {
+		return fmt.Errorf("avatar must be PNG, JPEG or WebP")
+	}
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
 		return err
@@ -64,6 +70,7 @@ func importAvatar(cfgPath, name, file, id, mime string) error {
 		return err
 	}
 	if err = st.InsertMedia(id, user.ID, "avatar", mime, int64(len(data)), target); err != nil {
+		_ = os.Remove(target)
 		return err
 	}
 	return st.SetUserAvatar(user.ID, id)

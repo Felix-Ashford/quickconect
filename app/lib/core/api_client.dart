@@ -266,6 +266,7 @@ class ApiClient {
     int conversationId, {
     String? title,
     String? model,
+    List<String>? models,
     bool updateSystemPrompt = false,
     String? systemPrompt,
   }) async {
@@ -275,6 +276,7 @@ class ApiClient {
       body: {
         'title': ?title,
         'model': ?model,
+        'models': ?models,
         if (updateSystemPrompt) 'system_prompt': systemPrompt,
       },
     );
@@ -291,6 +293,23 @@ class ApiClient {
   Future<void> markRead(int convId, int seq) async {
     await _req('POST', '/api/conversations/$convId/read', body: {'seq': seq});
   }
+
+  Future<Map<String, dynamic>> automationContext(
+    String identity,
+    int convId,
+  ) async =>
+      await _req('GET', '/api/automation/$identity/threads/$convId/context')
+          as Map<String, dynamic>;
+
+  Future<Message> deleteExcludedMessage(
+    String identity,
+    Message message,
+  ) async => Message.fromJson(
+    await _req(
+      'DELETE',
+      '/api/automation/$identity/threads/${message.convId}/messages/${message.id}',
+    ) as Map<String, dynamic>,
+  );
 
   Future<Message> editMessage(Message message, String text) async =>
       Message.fromJson(

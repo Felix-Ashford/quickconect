@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:app_badge_plus/app_badge_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
@@ -113,6 +114,9 @@ class QuickConectApp extends StatelessWidget {
     return Consumer<ThemeController>(
       builder: (context, theme, _) => MaterialApp(
         title: 'QuickConect',
+        locale: const Locale('zh', 'CN'),
+        supportedLocales: const [Locale('zh', 'CN')],
+        localizationsDelegates: GlobalMaterialLocalizations.delegates,
         navigatorKey: _navKey,
         theme: buildQcTheme(theme.scheme),
         builder: (context, child) => Column(

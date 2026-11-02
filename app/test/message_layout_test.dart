@@ -5,11 +5,63 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:quickconect_app/core/models.dart';
 import 'package:quickconect_app/core/prefs.dart';
 import 'package:quickconect_app/core/session.dart';
+import 'package:quickconect_app/core/theme_scheme.dart';
 import 'package:quickconect_app/widgets/message_bubble.dart';
 import 'package:quickconect_app/pages/chat_page.dart';
 import 'package:quickconect_app/widgets/contact_picker.dart';
 
 void main() {
+  testWidgets(
+    'excluded reply uses custom color without context text and keeps delete action',
+    (tester) async {
+      final session = Session(MemoryPrefs());
+      addTearDown(session.dispose);
+      var deletions = 0;
+      await tester.pumpWidget(
+        ChangeNotifierProvider.value(
+          value: session,
+          child: MaterialApp(
+            theme: buildQcTheme(
+              QcScheme.builtIns.first.copyWith(excludedAiBubble: Colors.pink),
+            ),
+            home: Scaffold(
+              body: MessageBubble(
+                message: Message(
+                  id: 'excluded',
+                  convId: 1,
+                  seq: 2,
+                  senderId: 2,
+                  senderName: 'Helper',
+                  type: 'text',
+                  payload: {'text': 'Old answer'},
+                  createdAt: 1700000000,
+                  clientMsgId: 'excluded',
+                ),
+                isMine: false,
+                isAutomation: true,
+                excludedFromAIContext: true,
+                onDelete: () => deletions++,
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(find.textContaining('不在 AI 上下文'), findsNothing);
+      final surface = tester.widget<Container>(
+        find.byKey(const ValueKey('message-surface-excluded')),
+      );
+      expect((surface.decoration as BoxDecoration).color, Colors.pink);
+      await tester.tap(find.byTooltip('消息操作'));
+      await tester.pumpAndSettle();
+      expect(find.text('修改消息'), findsNothing);
+      expect(find.text('撤回消息'), findsNothing);
+      await tester.tap(find.text('删除上下文外消息'));
+      await tester.pumpAndSettle();
+      expect(deletions, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('short messages and images fit content; history starts at top', (
     tester,
   ) async {

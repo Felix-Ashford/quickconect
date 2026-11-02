@@ -28,16 +28,21 @@ class _HomePageState extends State<HomePage> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
     final convs = session.sortedConvs();
+    // Keep the current page alive while its deletion dialog finishes. The
+    // chat owns choosing a replacement after the remote deletion completes.
     final selected =
-        _activeConvId != null && session.convs.containsKey(_activeConvId)
-        ? _activeConvId
-        : (convs.isNotEmpty ? convs.first.id : null);
+        _activeConvId ??
+        session.currentConvId ??
+        (convs.isNotEmpty ? convs.first.id : null);
     if (selected != null) {
       return ChatPage(
         key: ValueKey(selected),
         convId: selected,
         showConversationPicker: true,
-        onConversationChanged: (id) => setState(() => _activeConvId = id),
+        onConversationChanged: (id) => setState(() {
+          session.currentConvId = null;
+          _activeConvId = id > 0 ? id : null;
+        }),
       );
     }
     return _empty(context, session);

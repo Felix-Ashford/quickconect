@@ -6,9 +6,17 @@ import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:provider/provider.dart';
 
 import '../core/theme_scheme.dart';
+import '../widgets/preset_name_dialog.dart';
 
-class AppearancePage extends StatelessWidget {
+class AppearancePage extends StatefulWidget {
   const AppearancePage({super.key});
+
+  @override
+  State<AppearancePage> createState() => _AppearancePageState();
+}
+
+class _AppearancePageState extends State<AppearancePage> {
+  bool _savingPreset = false;
 
   @override
   Widget build(BuildContext context) {
@@ -16,35 +24,71 @@ class AppearancePage extends StatelessWidget {
     final s = tc.scheme;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('外观定制')),
+      appBar: AppBar(
+        title: const Text('外观定制'),
+        actions: [
+          TextButton.icon(
+            key: const ValueKey('save-color-preset'),
+            label: const Text('保存配色预设'),
+            icon: const Icon(Icons.save_outlined),
+            onPressed: _savingPreset
+                ? null
+                : () async {
+                    setState(() => _savingPreset = true);
+                    try {
+                      final name = await askPresetName(
+                        context,
+                        tc.userPresets.map((p) => p.name),
+                      );
+                      if (name != null) await tc.savePreset(name);
+                    } finally {
+                      if (mounted) setState(() => _savingPreset = false);
+                    }
+                  },
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.only(bottom: 32),
         children: [
           _Section('预设方案'),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Text('右上角“保存配色预设”可将当前整套颜色命名并保存。'),
+          ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Wrap(
               spacing: 8,
               runSpacing: 8,
               children: [
-                for (final p in [...QcScheme.builtIns, ...tc.userPresets])
+                for (final p in QcScheme.builtIns)
                   _PresetChip(
                     scheme: p,
                     selected: _sameColors(s, p),
                     onSelected: (_) => tc.apply(p),
                   ),
+                for (final p in tc.userPresets)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _PresetChip(
+                        scheme: p,
+                        selected: _sameColors(s, p),
+                        onSelected: (_) => tc.apply(p),
+                      ),
+                      IconButton(
+                        tooltip: '删除预设「${p.name}」',
+                        visualDensity: VisualDensity.compact,
+                        iconSize: 18,
+                        onPressed: () => tc.deletePreset(p.name),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
               ],
             ),
           ),
-          if (tc.userPresets.any((p) => _sameColors(s, p)))
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: TextButton.icon(
-                icon: const Icon(Icons.delete_outline, size: 18),
-                label: Text('删除预设「${s.name}」'),
-                onPressed: () => tc.deletePreset(s.name),
-              ),
-            ),
           _Section('实时预览'),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -118,6 +162,20 @@ class AppearancePage extends StatelessWidget {
             color: s.unreadBadge,
             onPicked: (c) => tc.apply(s.copyWith(unreadBadge: c, name: '自定义')),
           ),
+          _ColorRow(
+            label: '上下文外气泡',
+            desc: 'AI 不会读取的消息使用此颜色，替代文字标记',
+            color: s.excludedAiBubble,
+            onPicked: (c) =>
+                tc.apply(s.copyWith(excludedAiBubble: c, name: '自定义')),
+          ),
+          _ColorRow(
+            label: '上下文外气泡文字',
+            desc: '',
+            color: s.excludedAiBubbleText,
+            onPicked: (c) =>
+                tc.apply(s.copyWith(excludedAiBubbleText: c, name: '自定义')),
+          ),
           const SizedBox(height: 16),
           Center(
             child: OutlinedButton.icon(
@@ -143,6 +201,8 @@ class AppearancePage extends StatelessWidget {
       a.otherBubbleText.toARGB32() == b.otherBubbleText.toARGB32() &&
       a.aiBubble.toARGB32() == b.aiBubble.toARGB32() &&
       a.aiBubbleText.toARGB32() == b.aiBubbleText.toARGB32() &&
+      a.excludedAiBubble.toARGB32() == b.excludedAiBubble.toARGB32() &&
+      a.excludedAiBubbleText.toARGB32() == b.excludedAiBubbleText.toARGB32() &&
       a.unreadBadge.toARGB32() == b.unreadBadge.toARGB32();
 }
 
@@ -284,7 +344,6 @@ class _PreviewPane extends StatelessWidget {
     }
 
     return Container(
-      height: 230,
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         color: s.chatBg,
@@ -292,6 +351,7 @@ class _PreviewPane extends StatelessWidget {
         border: Border.all(color: Colors.black26),
       ),
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
           Container(
             height: 34,
@@ -306,59 +366,58 @@ class _PreviewPane extends StatelessWidget {
               ),
             ),
           ),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(10),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  bubble(mine: false, text: '你好！这是对方的气泡样式'),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: Container(
-                      margin: const EdgeInsets.symmetric(vertical: 3),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 6,
-                      ),
-                      constraints: const BoxConstraints(maxWidth: 220),
-                      decoration: BoxDecoration(
-                        color: s.aiBubble,
-                        borderRadius: BorderRadius.circular(radius),
-                      ),
-                      child: Text(
-                        '这是 AI 身份的独立气泡样式',
-                        style: TextStyle(fontSize: 13, color: s.aiBubbleText),
-                      ),
+          Padding(
+            padding: const EdgeInsets.all(10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                bubble(mine: false, text: '你好！这是对方的气泡样式'),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(vertical: 3),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
                     ),
-                  ),
-                  bubble(mine: true, text: '这是我的气泡样式 👋'),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: Container(
-                      width: 110,
-                      height: 74,
-                      margin: const EdgeInsets.symmetric(vertical: 3),
-                      decoration: BoxDecoration(
-                        color: s.myBubble,
-                        borderRadius: BorderRadius.circular(radius),
-                      ),
-                      child: Icon(Icons.image_outlined, color: s.myBubbleText),
+                    constraints: const BoxConstraints(maxWidth: 220),
+                    decoration: BoxDecoration(
+                      color: s.aiBubble,
+                      borderRadius: BorderRadius.circular(radius),
                     ),
-                  ),
-                  Align(
-                    alignment: Alignment.centerRight,
                     child: Text(
-                      '02:35',
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: s.otherBubbleText.withValues(alpha: 0.55),
-                      ),
+                      '这是 AI 身份的独立气泡样式',
+                      style: TextStyle(fontSize: 13, color: s.aiBubbleText),
                     ),
                   ),
-                ],
-              ),
+                ),
+                bubble(mine: true, text: '这是我的气泡样式 👋'),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: Container(
+                    width: 110,
+                    height: 74,
+                    margin: const EdgeInsets.symmetric(vertical: 3),
+                    decoration: BoxDecoration(
+                      color: s.myBubble,
+                      borderRadius: BorderRadius.circular(radius),
+                    ),
+                    child: Icon(Icons.image_outlined, color: s.myBubbleText),
+                  ),
+                ),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: Text(
+                    '02:35',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: s.otherBubbleText.withValues(alpha: 0.55),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ],

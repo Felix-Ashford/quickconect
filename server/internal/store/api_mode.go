@@ -16,6 +16,7 @@ func (s *Store) migrateAPIMode() error {
 		{"messages", "revision", "INTEGER NOT NULL DEFAULT 0"},
 		{"automation_threads", "system_prompt", "TEXT"},
 		{"automation_threads", "title_manual", "INTEGER NOT NULL DEFAULT 0"},
+		{"automation_threads", "selected_models", "TEXT NOT NULL DEFAULT '[]'"},
 	} {
 		rows, err := s.db.Query("PRAGMA table_info(" + column.table + ")")
 		if err != nil {
@@ -78,7 +79,7 @@ func (s *Store) ReviseMessage(convID, userID int64, id string, text *string) (*M
 	if err = json.Unmarshal([]byte(payload), &data); err != nil {
 		return nil, err
 	}
-	if data["retracted"] == true {
+	if data["retracted"] == true || data["deleted"] == true {
 		return nil, ErrInvalidMessage
 	}
 	if text != nil {
@@ -162,13 +163,78 @@ func (s *Store) EnrichThread(thread *AutomationThread) error {
 	if thread == nil {
 		return nil
 	}
-	return s.db.QueryRow(`SELECT system_prompt,title_manual FROM automation_threads WHERE id=?`, thread.ID).Scan(&thread.SystemPrompt, &thread.TitleManual)
+	var raw string
+	if err := s.db.QueryRow(`SELECT system_prompt,title_manual,selected_models FROM automation_threads WHERE id=?`, thread.ID).Scan(&thread.SystemPrompt, &thread.TitleManual, &raw); err != nil {
+		return err
+	}
+	if err := json.Unmarshal([]byte(raw), &thread.SelectedModels); err != nil {
+		return err
+	}
+	if len(thread.SelectedModels) == 0 && thread.SelectedModel != "" {
+		thread.SelectedModels = []string{thread.SelectedModel}
+	}
+	return nil
 }
 
 func (s *Store) SaveThreadSettings(thread AutomationThread) error {
-	_, err := s.db.Exec(`UPDATE automation_threads SET title=?,selected_model=?,system_prompt=?,title_manual=? WHERE id=? AND identity_name=? AND user_id=?`, thread.Title, thread.SelectedModel, thread.SystemPrompt, thread.TitleManual, thread.ID, thread.Identity, thread.UserID)
+	models := thread.SelectedModels
+	if models == nil {
+		models = []string{}
+	}
+	raw, err := json.Marshal(models)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE automation_threads SET title=?,selected_model=?,selected_models=?,system_prompt=?,title_manual=? WHERE id=? AND identity_name=? AND user_id=?`, thread.Title, thread.SelectedModel, string(raw), thread.SystemPrompt, thread.TitleManual, thread.ID, thread.Identity, thread.UserID)
 	return err
 }
+
+// 删除保留原问题关联和同步墓碑，但不再保留回复正文。
+func (s *Store) DeletePrivateThreadMessage(convID, userID int64, messageID string) (*Message, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var owner int64
+	if err = tx.QueryRow(`SELECT user_id FROM automation_threads WHERE conversation_id=? AND user_id=?`, convID, userID).Scan(&owner); err != nil {
+		return nil, ErrForbidden
+	}
+	var raw string
+	if err = tx.QueryRow(`SELECT m.payload FROM messages m JOIN users u ON u.id=m.sender_id JOIN automation_threads t ON t.conversation_id=m.conv_id AND t.identity_name=u.name WHERE m.id=? AND m.conv_id=? AND t.user_id=?`, messageID, convID, userID).Scan(&raw); err != nil {
+		return nil, err
+	}
+	var data map[string]any
+	if err = json.Unmarshal([]byte(raw), &data); err != nil {
+		return nil, err
+	}
+	tombstone := map[string]any{"deleted": true, "deleted_at": time.Now().Unix()}
+	for _, key := range []string{"reply_to", "question_revision", "context_standalone", "error"} {
+		if value, ok := data[key]; ok {
+			tombstone[key] = value
+		}
+	}
+	updated, err := json.Marshal(tombstone)
+	if err != nil {
+		return nil, err
+	}
+	res, err := tx.Exec(`INSERT INTO message_changes(conv_id,message_id) VALUES(?,?)`, convID, messageID)
+	if err != nil {
+		return nil, err
+	}
+	rev, err := res.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	if _, err = tx.Exec(`UPDATE messages SET payload=?,revision=? WHERE id=? AND conv_id=?`, string(updated), rev, messageID, convID); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.MessageByID(convID, messageID)
+}
+
 func (s *Store) SetAutomaticTitle(id int64, title string) error {
 	_, err := s.db.Exec(`UPDATE automation_threads SET title=? WHERE id=? AND title_manual=0 AND title=''`, title, id)
 	return err
@@ -197,7 +263,7 @@ func (s *Store) ContextHistoryThrough(convID int64, maxChars int, throughSeq int
 			return nil, err
 		}
 		var p map[string]any
-		if json.Unmarshal([]byte(raw), &p) != nil || p["retracted"] == true || p["error"] == true {
+		if json.Unmarshal([]byte(raw), &p) != nil || p["retracted"] == true || p["deleted"] == true || p["error"] == true {
 			continue
 		}
 		m.Payload = json.RawMessage(raw)

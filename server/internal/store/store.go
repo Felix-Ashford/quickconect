@@ -159,15 +159,16 @@ type ConvSummary struct {
 }
 
 type AutomationThread struct {
-	SystemPrompt   *string `json:"system_prompt"`
-	TitleManual    bool    `json:"title_manual"`
-	ID             int64   `json:"id"`
-	Identity       string  `json:"identity"`
-	UserID         int64   `json:"user_id"`
-	ConversationID int64   `json:"conversation_id"`
-	Title          string  `json:"title"`
-	SelectedModel  string  `json:"selected_model"`
-	CreatedAt      int64   `json:"created_at"`
+	SystemPrompt   *string  `json:"system_prompt"`
+	TitleManual    bool     `json:"title_manual"`
+	ID             int64    `json:"id"`
+	Identity       string   `json:"identity"`
+	UserID         int64    `json:"user_id"`
+	ConversationID int64    `json:"conversation_id"`
+	Title          string   `json:"title"`
+	SelectedModel  string   `json:"selected_model"`
+	SelectedModels []string `json:"selected_models"`
+	CreatedAt      int64    `json:"created_at"`
 }
 
 type Media struct {
@@ -448,7 +449,13 @@ func (s *Store) AutomationThreadForUser(identity string, userID, conversationID 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
-	return &item, err
+	if err != nil {
+		return nil, err
+	}
+	if err = s.EnrichThread(&item); err != nil {
+		return nil, err
+	}
+	return &item, nil
 }
 
 func (s *Store) UpdateAutomationThread(identity string, userID, conversationID int64, title, model string) error {
@@ -734,6 +741,10 @@ func (s *Store) MessagesAfter(convID, afterSeq int64, limit int) ([]Message, boo
 		out = out[:limit]
 	}
 	return out, hasMore, nil
+}
+
+func (s *Store) MessageBySeq(convID, seq int64) (*Message, error) {
+	return s.messageRow(`SELECT `+messageColumns+` FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conv_id=? AND m.seq=?`, convID, seq)
 }
 
 // MessagesRecent returns the newest messages in chronological order. It is

@@ -61,7 +61,7 @@ void main() {
       expect(find.text(label), findsOneWidget);
     }
     expect(find.text('模型与提示词'), findsOneWidget);
-    expect(find.text('自动选择 · gpt-test'), findsOneWidget);
+    expect(find.text('上次使用 · gpt-test'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('automation-actions-row')),
       findsOneWidget,

@@ -399,3 +399,41 @@ func TestAPISelectedModelDoesNotSilentlyFallBack(t *testing.T) {
 		t.Fatalf("wrong fallback order: %s, %s", first, second)
 	}
 }
+
+func TestAPIThreadOrderedModelsArePersistedAndTriedInOrder(t *testing.T) {
+	calls := make(chan string, 4)
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		calls <- req.Model
+		if req.Model == "first" {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": "ok"}}}})
+	}))
+	defer model.Close()
+	base, st := startTestServer(t, config.AutomationIdentity{ID: "helper", Name: "helper", Mode: "api", Enabled: true, Endpoint: model.URL, DefaultModel: "manager-default", ModelFallbacks: []string{"manager-backup"}, PrivateDirectory: true})
+	createTestPeople(t, st)
+	token := login(t, base, "alice")
+	var thread store.AutomationThread
+	decode(t, call(t, "POST", base+"/api/automation/helper/threads", token, map[string]string{}), &thread)
+	threadURL := fmt.Sprintf("%s/api/automation/helper/threads/%d", base, thread.ConversationID)
+	if response := call(t, "PUT", threadURL, token, map[string]any{"models": []string{"first", "second", "first"}}); response.status != http.StatusOK {
+		t.Fatalf("save model order: %d %s", response.status, response.body)
+	}
+	var threads []store.AutomationThread
+	decode(t, call(t, "GET", base+"/api/automation/helper/threads", token, nil), &threads)
+	if len(threads) != 1 || strings.Join(threads[0].SelectedModels, ",") != "first,second" {
+		t.Fatalf("model order not persisted: %+v", threads)
+	}
+	response := call(t, "POST", base+"/api/automation/helper/invoke", token, map[string]any{"conversation_id": thread.ConversationID, "prompt": "hello", "client_msg_id": "ordered-models"})
+	if response.status != http.StatusOK {
+		t.Fatalf("invoke: %d %s", response.status, response.body)
+	}
+	if first, second := <-calls, <-calls; first != "first" || second != "second" {
+		t.Fatalf("models tried out of order: %s, %s", first, second)
+	}
+}
