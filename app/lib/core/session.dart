@@ -909,22 +909,38 @@ class Session extends ChangeNotifier {
   /// 表情贴纸（图片上传后引用；渲染时不带气泡背景）。
   Future<void> sendSticker(
     int convId,
-    Uint8List bytes, {
+    Uint8List? bytes, {
     required String packId,
     required String stickerId,
+    String? mediaId,
+    String name = '',
+    String description = '',
   }) async {
-    final id = await mediaStore.upload(
-      bytes,
-      kind: 'sticker',
-      mime: 'image/png',
-      name: '$stickerId.png',
-    );
+    final id =
+        mediaId ??
+        await mediaStore.upload(
+          bytes!,
+          kind: 'sticker',
+          mime: 'image/png',
+          name: '$stickerId.png',
+        );
     await _send(convId, 'sticker', {
       'media_id': id,
       'pack_id': packId,
       'sticker_id': stickerId,
+      if (name.isNotEmpty) 'name': name,
+      if (description.isNotEmpty) 'description': description,
     });
   }
+
+  Future<List<Map<String, dynamic>>> loadSharedStickers() async {
+    final client = api;
+    if (client == null) return const [];
+    return client.stickers();
+  }
+
+  Future<Uint8List> downloadSticker(String mediaId) =>
+      mediaStore.download(mediaId);
 
   Future<void> retry(Message m) async {
     if (!m.isPending) return;

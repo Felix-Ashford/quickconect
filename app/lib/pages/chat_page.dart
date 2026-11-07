@@ -57,6 +57,7 @@ class _ChatPageState extends State<ChatPage> {
   late final Session _session = context.read<Session>();
 
   bool _showPanel = false;
+  double _panelHeight = 280;
   bool _recording = false;
   String _recExt = 'm4a';
   String? _recPath;
@@ -776,124 +777,165 @@ class _ChatPageState extends State<ChatPage> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          if (_currentIdentity case final identity? when identity.mode == 'api')
-            AutomationChatTools(
-              actionGate: _uiActions,
-              session: session,
-              identity: identity,
-              thread: _automationThread,
-              activeModel: _activeAutomationModel,
-              onDirectory: () => _openAutomationDirectory(identity),
-              onUpdated: _loadCurrentThread,
-              onDeleted: () async {
-                await session.refreshConversations();
-                if (!mounted) return;
-                final threads =
-                    await session.api?.automationThreads(identity.id) ??
-                    const <AutomationThread>[];
-                final next = threads.isEmpty ? null : threads.first;
-                if (next != null) {
-                  await session.rememberAutomationThread(
-                    identity.id,
-                    next.conversationId,
-                  );
-                  await session.refreshConversations();
-                }
-                if (next != null) {
-                  widget.onConversationChanged?.call(next.conversationId);
-                } else {
-                  widget.onConversationChanged?.call(-1);
-                }
-              },
-              onConversationChanged: (id) =>
-                  widget.onConversationChanged?.call(id),
-            ),
-          if (isPrivateApiChat)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      _contextError ?? '上下文外的消息使用单独的气泡颜色，可在外观设置中修改；新提问会占用字符预算。上下文外的 AI 回复可通过消息菜单删除。',
-                      style: Theme.of(context).textTheme.bodySmall,
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final maxPanelHeight = (constraints.maxHeight * 0.5).clamp(
+            80.0,
+            520.0,
+          );
+          return Column(
+            children: [
+              if (_currentIdentity case final identity?
+                  when identity.mode == 'api')
+                AutomationChatTools(
+                  actionGate: _uiActions,
+                  session: session,
+                  identity: identity,
+                  thread: _automationThread,
+                  activeModel: _activeAutomationModel,
+                  onDirectory: () => _openAutomationDirectory(identity),
+                  onUpdated: _loadCurrentThread,
+                  onDeleted: () async {
+                    await session.refreshConversations();
+                    if (!mounted) return;
+                    final threads =
+                        await session.api?.automationThreads(identity.id) ??
+                        const <AutomationThread>[];
+                    final next = threads.isEmpty ? null : threads.first;
+                    if (next != null) {
+                      await session.rememberAutomationThread(
+                        identity.id,
+                        next.conversationId,
+                      );
+                      await session.refreshConversations();
+                    }
+                    if (next != null) {
+                      widget.onConversationChanged?.call(next.conversationId);
+                    } else {
+                      widget.onConversationChanged?.call(-1);
+                    }
+                  },
+                  onConversationChanged: (id) =>
+                      widget.onConversationChanged?.call(id),
+                ),
+              if (isPrivateApiChat)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          _contextError ?? '上下文外的消息使用单独的气泡颜色，可在外观设置中修改；新提问会占用字符预算。上下文外的 AI 回复可通过消息菜单删除。',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: '刷新上下文状态',
+                        icon: const Icon(Icons.refresh, size: 18),
+                        onPressed: () =>
+                            setState(() => _contextSignature = null),
+                      ),
+                    ],
+                  ),
+                ),
+              Expanded(
+                child: msgs.isEmpty
+                    ? const Center(child: Text('打个招呼吧 👋'))
+                    : ListView.builder(
+                        controller: _scroll,
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        itemCount: msgs.length,
+                        itemBuilder: (context, i) {
+                          final m = msgs[i];
+                          final state = _contextStates[m.id] as Map?;
+                          final excluded =
+                              state != null && state['included'] == false;
+                          return MessageBubble(
+                            // 消息级 key：避免 ListView 按下标复用控件导致的状态错位
+                            key: ValueKey(m.id),
+                            message: m,
+                            excludedFromAIContext: excluded,
+                            onDelete:
+                                isPrivateApiChat &&
+                                    state?['can_delete'] == true &&
+                                    !m.isPending
+                                ? () =>
+                                      _uiAction(() => _deleteExcludedMessage(m))
+                                : null,
+                            isMine: meId != null && m.senderId == meId,
+                            isAutomation: _automations.any(
+                              (a) => a.userId == m.senderId,
+                            ),
+                            onRetry: m.status == MsgStatus.failed
+                                ? () => _uiAction(() => session.retry(m))
+                                : null,
+                            onEdit:
+                                meId == m.senderId &&
+                                    !m.isPending &&
+                                    !m.isRetracted &&
+                                    m.type == 'text'
+                                ? () => _uiAction(() => _editMessage(m))
+                                : null,
+                            onRetract:
+                                meId == m.senderId &&
+                                    !m.isPending &&
+                                    !m.isRetracted
+                                ? () => _uiAction(() => _retractMessage(m))
+                                : null,
+                            onRegenerate:
+                                meId == m.senderId &&
+                                    !m.isPending &&
+                                    !m.isRetracted &&
+                                    m.type == 'text' &&
+                                    _messageAutomations(m).isNotEmpty
+                                ? () => _uiAction(() => _regenerateMessage(m))
+                                : null,
+                          );
+                        },
+                      ),
+              ),
+              if (_recording) _recordingBar(),
+              if (_currentIdentity == null)
+                MentionSuggestions(
+                  session: session,
+                  controller: _input,
+                  identities: _automations,
+                  onSelected: _focus.requestFocus,
+                ),
+              const Divider(height: 1),
+              _inputRow(),
+              if (_showPanel) ...[
+                GestureDetector(
+                  key: const ValueKey('sticker-panel-resize-handle'),
+                  behavior: HitTestBehavior.opaque,
+                  onVerticalDragUpdate: (details) {
+                    setState(
+                      () => _panelHeight = (_panelHeight - details.delta.dy)
+                          .clamp(80.0, maxPanelHeight),
+                    );
+                  },
+                  child: SizedBox(
+                    height: 24,
+                    child: Center(
+                      child: Container(
+                        width: 52,
+                        height: 5,
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.outlineVariant,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
                     ),
                   ),
-                  IconButton(
-                    tooltip: '刷新上下文状态',
-                    icon: const Icon(Icons.refresh, size: 18),
-                    onPressed: () => setState(() => _contextSignature = null),
-                  ),
-                ],
-              ),
-            ),
-          Expanded(
-            child: msgs.isEmpty
-                ? const Center(child: Text('打个招呼吧 👋'))
-                : ListView.builder(
-                    controller: _scroll,
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    itemCount: msgs.length,
-                    itemBuilder: (context, i) {
-                      final m = msgs[i];
-                      final state = _contextStates[m.id] as Map?;
-                      final excluded =
-                          state != null && state['included'] == false;
-                      return MessageBubble(
-                        // 消息级 key：避免 ListView 按下标复用控件导致的状态错位
-                        key: ValueKey(m.id),
-                        message: m,
-                        excludedFromAIContext: excluded,
-                        onDelete:
-                            isPrivateApiChat &&
-                                state?['can_delete'] == true &&
-                                !m.isPending
-                            ? () => _uiAction(() => _deleteExcludedMessage(m))
-                            : null,
-                        isMine: meId != null && m.senderId == meId,
-                        isAutomation: _automations.any(
-                          (a) => a.userId == m.senderId,
-                        ),
-                        onRetry: m.status == MsgStatus.failed
-                            ? () => _uiAction(() => session.retry(m))
-                            : null,
-                        onEdit:
-                            meId == m.senderId &&
-                                !m.isPending &&
-                                !m.isRetracted &&
-                                m.type == 'text'
-                            ? () => _uiAction(() => _editMessage(m))
-                            : null,
-                        onRetract:
-                            meId == m.senderId && !m.isPending && !m.isRetracted
-                            ? () => _uiAction(() => _retractMessage(m))
-                            : null,
-                        onRegenerate:
-                            meId == m.senderId &&
-                                !m.isPending &&
-                                !m.isRetracted &&
-                                m.type == 'text' &&
-                                _messageAutomations(m).isNotEmpty
-                            ? () => _uiAction(() => _regenerateMessage(m))
-                            : null,
-                      );
-                    },
-                  ),
-          ),
-          if (_recording) _recordingBar(),
-          if (_currentIdentity == null)
-            MentionSuggestions(
-              session: session,
-              controller: _input,
-              identities: _automations,
-              onSelected: _focus.requestFocus,
-            ),
-          const Divider(height: 1),
-          _inputRow(),
-          if (_showPanel) StickerPanel(convId: widget.convId),
-        ],
+                ),
+                SizedBox(
+                  height: _panelHeight.clamp(80.0, maxPanelHeight),
+                  child: StickerPanel(convId: widget.convId),
+                ),
+              ],
+            ],
+          );
+        },
       ),
     );
   }

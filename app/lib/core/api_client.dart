@@ -134,6 +134,13 @@ class ApiClient {
         as Map<String, dynamic>,
   );
 
+  Future<List<Map<String, dynamic>>> stickers() async {
+    final result = await _req('GET', '/api/stickers') as Map<String, dynamic>;
+    return (result['stickers'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
+  }
+
   /// 当前设备信息（含推送铃主题）。
   Future<DeviceInfo> device() async {
     final j = await _req('GET', '/api/device') as Map<String, dynamic>;

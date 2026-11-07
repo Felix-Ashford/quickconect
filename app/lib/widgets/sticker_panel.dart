@@ -1,6 +1,8 @@
 /// 表情/贴纸面板：emoji 直接作为文字发送；自定义贴纸包（zip 导入）以贴纸消息发送。
 library;
 
+import 'dart:typed_data';
+
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -147,6 +149,9 @@ class _StickerPanelState extends State<StickerPanel> {
   int _mode = 0; // 0=emoji 1=贴纸
   List<StickerPack> _packs = [];
   bool _loadingPacks = false;
+  List<Map<String, dynamic>> _shared = [];
+  String? _sharedError;
+  final Map<String, Future<Uint8List>> _images = {};
 
   @override
   void initState() {
@@ -160,6 +165,12 @@ class _StickerPanelState extends State<StickerPanel> {
     setState(() => _loadingPacks = true);
     try {
       _packs = await store.loadAll();
+      try {
+        _shared = await session.loadSharedStickers();
+        _sharedError = null;
+      } catch (_) {
+        _sharedError = '共享贴纸暂不可用，请确认服务端已更新后刷新';
+      }
     } finally {
       if (mounted) setState(() => _loadingPacks = false);
     }
@@ -213,7 +224,6 @@ class _StickerPanelState extends State<StickerPanel> {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Container(
-      height: 260,
       color: cs.surfaceContainerLow,
       child: Column(
         children: [
@@ -223,6 +233,12 @@ class _StickerPanelState extends State<StickerPanel> {
               _modeChip('😀 表情', 0),
               _modeChip('🧩 贴纸', 1),
               const Spacer(),
+              if (_mode == 1)
+                IconButton(
+                  tooltip: '刷新共享贴纸',
+                  onPressed: _loadingPacks ? null : _loadPacks,
+                  icon: const Icon(Icons.refresh),
+                ),
               if (_mode == 1)
                 TextButton.icon(
                   onPressed: _importZip,
@@ -254,8 +270,11 @@ class _StickerPanelState extends State<StickerPanel> {
     final all = _emojiGroups.values.expand((e) => e).toList();
     return GridView.builder(
       padding: const EdgeInsets.all(8),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 8,
+      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+        maxCrossAxisExtent: 64,
+        mainAxisExtent: 58,
+        crossAxisSpacing: 4,
+        mainAxisSpacing: 4,
       ),
       itemCount: all.length,
       itemBuilder: (context, i) => InkWell(
@@ -272,7 +291,7 @@ class _StickerPanelState extends State<StickerPanel> {
     if (_loadingPacks) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_packs.isEmpty) {
+    if (_packs.isEmpty && _shared.isEmpty && _sharedError == null) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -289,6 +308,85 @@ class _StickerPanelState extends State<StickerPanel> {
     }
     return ListView(
       children: [
+        if (_sharedError != null)
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Text(_sharedError!),
+          ),
+        if (_shared.isNotEmpty) ...[
+          const Padding(
+            padding: EdgeInsets.fromLTRB(12, 8, 12, 0),
+            child: Text('共享贴纸', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            padding: const EdgeInsets.all(8),
+            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 96,
+              mainAxisExtent: 110,
+              crossAxisSpacing: 4,
+              mainAxisSpacing: 4,
+            ),
+            itemCount: _shared.length,
+            itemBuilder: (context, index) {
+              final s = _shared[index];
+              final media = s['media_id'] as String;
+              return Tooltip(
+                message: '${s['name']}：${s['description']}',
+                child: InkWell(
+                  onTap: () async {
+                    try {
+                      await context.read<Session>().sendSticker(
+                        widget.convId,
+                        null,
+                        packId: s['pack_id'] as String,
+                        stickerId: s['id'] as String,
+                        mediaId: media,
+                        name: s['name'] as String,
+                        description: s['description'] as String? ?? '',
+                      );
+                    } catch (e) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context)
+                            .showSnackBar(SnackBar(content: Text('发送失败：$e')));
+                      }
+                    }
+                  },
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: FutureBuilder<Uint8List>(
+                          future: _images.putIfAbsent(
+                            media,
+                            () =>
+                                context.read<Session>().downloadSticker(media),
+                          ),
+                          builder: (context, snapshot) => snapshot.hasData
+                              ? Image.memory(
+                                  snapshot.data!,
+                                  fit: BoxFit.contain,
+                                  gaplessPlayback: true,
+                                )
+                              : Icon(
+                                  snapshot.hasError
+                                      ? Icons.broken_image_outlined
+                                      : Icons.hourglass_empty,
+                                ),
+                        ),
+                      ),
+                      Text(
+                        s['name'] as String,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
         for (final pack in _packs) ...[
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
@@ -297,27 +395,33 @@ class _StickerPanelState extends State<StickerPanel> {
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
           ),
-          GridView.count(
-            crossAxisCount: 5,
+          GridView.builder(
+            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 96,
+              mainAxisExtent: 88,
+              crossAxisSpacing: 4,
+              mainAxisSpacing: 4,
+            ),
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             padding: const EdgeInsets.all(8),
-            children: [
-              for (final s in pack.stickers)
-                InkWell(
-                  borderRadius: BorderRadius.circular(8),
-                  onTap: () => _sendSticker(pack, s),
-                  child: Padding(
-                    padding: const EdgeInsets.all(6),
-                    child: Image.file(
-                      pack.fileOf(s),
-                      fit: BoxFit.contain,
-                      errorBuilder: (_, _, _) =>
-                          const Icon(Icons.broken_image_outlined),
-                    ),
+            itemCount: pack.stickers.length,
+            itemBuilder: (context, index) {
+              final s = pack.stickers[index];
+              return InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: () => _sendSticker(pack, s),
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: Image.file(
+                    pack.fileOf(s),
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, _, _) =>
+                        const Icon(Icons.broken_image_outlined),
                   ),
                 ),
-            ],
+              );
+            },
           ),
         ],
       ],
